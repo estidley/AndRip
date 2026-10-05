@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.AndRip" parent="android:Theme.Material.Light.NoActionBar" />
+    <color name="ic_launcher_background">#16324F</color>
 </resources>
