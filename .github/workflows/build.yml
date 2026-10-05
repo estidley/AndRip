@@ -23,7 +23,9 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests and APK
-        run: ./gradlew testDebugUnitTest assembleRelease --stacktrace
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest assembleRelease --stacktrace
       - name: Name the APK
         run: cp app/build/outputs/apk/release/app-release.apk AndRip.apk
       - uses: actions/upload-artifact@v4
