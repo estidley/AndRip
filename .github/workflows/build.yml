@@ -1,0 +1,37 @@
+name: Build
+
+# Every push to main builds and tests the app.
+# Pushing a tag like v0.1.0 also publishes the APK as a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests and APK
+        run: ./gradlew testDebugUnitTest assembleRelease --stacktrace
+      - name: Name the APK
+        run: cp app/build/outputs/apk/release/app-release.apk AndRip.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AndRip-apk
+          path: AndRip.apk
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" AndRip.apk --title "AndRip $GITHUB_REF_NAME" --generate-notes
