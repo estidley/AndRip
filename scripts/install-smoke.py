@@ -3,7 +3,7 @@ import subprocess,sys,time,json
 from pathlib import Path
 report=Path('install-report');report.mkdir(exist_ok=True)
 def adb(*args):
-    result=subprocess.run(['adb',*args],text=True,capture_output=True,timeout=90)
+    result=subprocess.run(['adb',*args],text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=90)
     with (report/'commands.txt').open('a') as log:log.write('adb '+' '.join(args)+'\n'+result.stdout+result.stderr+'\n')
     if result.returncode:raise RuntimeError(result.stdout+result.stderr)
     return result.stdout
