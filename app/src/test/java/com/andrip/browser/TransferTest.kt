@@ -163,6 +163,9 @@ class TransferTest {
 
     @Test fun disconnectRetriesFromValidatedPartialBytes() = runBlocking {
         MockWebServer().use { server ->
+            // Disabling OkHttp connection retries below also disables fallback between localhost
+            // IPv4/IPv6 routes. Pin both ends so this fixture tests body recovery on every OS.
+            server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
             var requests = 0
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
@@ -176,7 +179,7 @@ class TransferTest {
             }
             val target = Files.createTempFile("disconnect", ".mp4").toFile()
             MediaTransfer(OkHttpClient.Builder().retryOnConnectionFailure(false).build())
-                .file(server.url("/movie").toString(), headers, target) { _, _ -> }
+                .file(server.url("/movie").newBuilder().host("127.0.0.1").build().toString(), headers, target) { _, _ -> }
             assertEquals("abcdefghij", target.readText())
             assertEquals(2, requests)
         }

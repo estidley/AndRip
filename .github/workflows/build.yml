@@ -30,10 +30,12 @@ jobs:
           assert not errors, [(i.get('id'), i.get('message')) for i in errors]
           PY
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: AndRip-unsigned-build-and-reports
           path: |
             app/build/outputs/apk/release/app-release-unsigned.apk
             app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/*.xml
             app/build/reports/lint-results-debug.html
       # Maintainers upload a verified, privately signed APK; see docs/RELEASING.md.
