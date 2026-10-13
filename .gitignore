@@ -11,3 +11,5 @@ captures/
 *.jks
 .DS_Store
 !app/andrip-dev.keystore
+app/src/androidTest/assets/media/
+device-download-report/

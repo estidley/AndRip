@@ -15,6 +15,7 @@ android {
         targetSdk = 35
         versionCode = 6
         versionName = "0.3.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // Public development key is for debug builds only. Release keys never belong in this repository.
@@ -101,4 +102,8 @@ dependencies {
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.work.testing)
     testImplementation(libs.junit)
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
+    androidTestImplementation(libs.mockwebserver)
 }
