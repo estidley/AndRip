@@ -76,7 +76,7 @@ object AppLog {
     }
 
     private fun webViewVersion(): String = try {
-        WebView.getCurrentWebViewPackage()?.versionName ?: "unknown"
+        if (Build.VERSION.SDK_INT >= 26) WebView.getCurrentWebViewPackage()?.versionName ?: "unknown" else "system WebView"
     } catch (_: Throwable) {
         "unknown"
     }

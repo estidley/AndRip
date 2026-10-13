@@ -146,7 +146,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 ForegroundInfo(
                     NOTIFICATION_BASE + (inputData.getLong(KEY_ID, 0L) % 100_000).toInt(),
                     Notifications.progress(applicationContext, inputData.getLong(KEY_ID, -1), title, percent, detail),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                    if (android.os.Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
                 ),
             )
         } catch (e: CancellationException) {
@@ -169,6 +169,18 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
 object MediaSaver {
     suspend fun save(context: Context, source: File, displayName: String, mimeType: String,
         journal: android.util.AtomicFile = android.util.AtomicFile(File(source.parentFile, "publication.json"))): Uri {
+        if (android.os.Build.VERSION.SDK_INT < 29) {
+            val folder = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: throw IOException("Device storage is unavailable. Retry saving when it is mounted.")
+            val saved = LegacyMediaSaver.save(source, File(folder, "AndRip"), displayName, journal)
+            return androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", saved)
+        }
+        return saveShared(context, source, displayName, mimeType, journal)
+    }
+
+    @androidx.annotation.RequiresApi(29)
+    private suspend fun saveShared(context: Context, source: File, displayName: String, mimeType: String,
+        journal: android.util.AtomicFile): Uri {
         val resolver = context.contentResolver
         val state = ExportCheckpoint.read(journal) ?: JSONObject()
             .put("token", "andrip-pending-${java.util.UUID.randomUUID()}.${displayName.substringAfterLast('.', "mp4")}")
@@ -236,6 +248,16 @@ object MediaSaver {
     }.getOrDefault(false)
 
     internal fun discardPending(context: Context, dir: File) {
+        if (android.os.Build.VERSION.SDK_INT < 29) {
+            val folder = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: return
+            LegacyMediaSaver.discardPending(File(folder, "AndRip"), ExportCheckpoint(dir).publication)
+            return
+        }
+        discardSharedPending(context, dir)
+    }
+
+    @androidx.annotation.RequiresApi(29)
+    private fun discardSharedPending(context: Context, dir: File) {
         val state = ExportCheckpoint.read(ExportCheckpoint(dir).publication) ?: return
         val token = state.optString("token")
         for (collection in listOf(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),

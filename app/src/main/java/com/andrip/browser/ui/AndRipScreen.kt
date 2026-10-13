@@ -393,6 +393,9 @@ private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit, onSource: 
             item {
                 Text("Your media, at your pace", style = MaterialTheme.typography.headlineSmall)
                 Text("Downloads continue when you leave AndRip.", style = MaterialTheme.typography.bodyMedium)
+                if (android.os.Build.VERSION.SDK_INT < 29) Text(
+                    "On Android 6–9, saved media stays in AndRip’s storage. Open it from this list; uninstalling AndRip removes these files.",
+                    style = MaterialTheme.typography.bodySmall)
                 var unmetered by remember { mutableStateOf(com.andrip.browser.download.DownloadPreferences.unmeteredOnly(context)) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     androidx.compose.material3.Switch(checked = unmetered, onCheckedChange = {

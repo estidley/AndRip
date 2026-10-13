@@ -11,10 +11,10 @@ android {
 
     defaultConfig {
         applicationId = "com.andrip.browser"
-        minSdk = 29
+        minSdk = 23
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.0"
+        versionCode = 6
+        versionName = "0.3.1"
     }
 
     // Public development key is for debug builds only. Release keys never belong in this repository.
@@ -31,6 +31,8 @@ android {
                 storePassword = System.getenv("ANDRIP_STORE_PASSWORD")
                 keyAlias = System.getenv("ANDRIP_KEY_ALIAS")
                 keyPassword = System.getenv("ANDRIP_KEY_PASSWORD")
+                enableV1Signing = true
+                enableV2Signing = true
             }
         }
     }
@@ -49,6 +51,7 @@ android {
         abortOnError = false
     }
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -67,6 +70,7 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)

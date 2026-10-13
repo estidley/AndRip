@@ -1,9 +1,17 @@
-# AndRip 0.3.0
+# AndRip 0.3.1
 
 An Android browser that discovers media, previews it with seeking, and saves authorized downloads.
 
 Kotlin, Jetpack Compose / Material 3, WebView, Media3, OkHttp, WorkManager and Room.
-Minimum Android 10 (API 29); compile/target SDK 35; JDK 17.
+Minimum Android 6.0 (API 23); compile/target SDK 35; JDK 17.
+
+## Compatibility update in 0.3.1
+
+The universal APK supports Android 6.0+ (API 23), with ARM 32/64-bit and x86 32/64-bit libraries. It is signed with both v1 and v2 schemes and the same private key as 0.3.0, so 0.3.0 can update in place.
+
+Android 6–9 use permission-free app-specific export storage; open saved media from Downloads. **Uninstalling AndRip deletes those older-Android exports.** Android 10+ retain shared MediaStore exports. Notification channels, WebView diagnostics and DRM metadata calls are gated by API availability; core Java library desugaring supports older runtimes. Android below 6.0 is unsupported.
+
+The install workflow validates the exact signed candidate APK (checksum pinned) on Android 6, 9, 10, 15 and 16 emulators before publication. It records fresh installation, visible app launch and reinstall results; this does not imply every manufacturer's device or codec has been tested.
 
 ## Changes in 0.3
 

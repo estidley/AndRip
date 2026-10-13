@@ -9,7 +9,7 @@ object MediaProtection {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(file.absolutePath)
-            if (extractor.drmInitData != null || !extractor.psshInfo.isNullOrEmpty()) {
+            if ((android.os.Build.VERSION.SDK_INT >= 24 && extractor.drmInitData != null) || !extractor.psshInfo.isNullOrEmpty()) {
                 throw UnsupportedStreamException("This media contains DRM protection and cannot be saved.")
             }
             if (extractor.trackCount == 0) throw UnsupportedStreamException("No playable media tracks were found. This container may not be supported by your device.")

@@ -1,0 +1,50 @@
+name: Install signed release
+on:
+  workflow_dispatch:
+    inputs:
+      asset_id:
+        description: Signed APK asset ID from this repository
+        required: true
+      sha256:
+        description: Expected APK SHA-256
+        required: true
+permissions:
+  # GitHub requires write access to read unpublished draft-release assets.
+  contents: write
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [23, 28, 29, 35, 36]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact signed release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ID: ${{ inputs.asset_id }}
+          EXPECTED_SHA: ${{ inputs.sha256 }}
+        run: |
+          [[ "$ASSET_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" -H 'Accept: application/octet-stream' > signed.apk
+          printf '%s  signed.apk\n' "$EXPECTED_SHA" | sha256sum -c -
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: python3 scripts/install-smoke.py signed.apk
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: install-api-${{ matrix.api }}
+          path: install-report/

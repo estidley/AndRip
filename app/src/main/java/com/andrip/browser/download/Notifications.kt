@@ -25,11 +25,13 @@ object Notifications {
 
     fun enabled(context: Context): Boolean {
         val manager = context.getSystemService(NotificationManager::class.java)
-        return manager.areNotificationsEnabled() &&
-            manager.getNotificationChannel(CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE
+        return androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+            (Build.VERSION.SDK_INT < 26 || manager.getNotificationChannel(CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE)
     }
 
     fun settingsIntent(context: Context): Intent {
+        if (Build.VERSION.SDK_INT < 26) return Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}"))
         val appEnabled = context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         return Intent(if (appEnabled) android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS
             else android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -44,6 +46,7 @@ object Notifications {
     }
 
     fun createChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < 26) return
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Downloads", NotificationManager.IMPORTANCE_LOW))
     }

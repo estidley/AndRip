@@ -161,6 +161,7 @@ object BrowserWebView {
                 }
             }
 
+            @androidx.annotation.RequiresApi(26)
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 AppLog.e(TAG, "WebView renderer died (crashed=${detail.didCrash()}) on ${vm.url}")
                 (view.parent as? ViewGroup)?.removeView(view)

@@ -1,6 +1,12 @@
-# AndRip 0.3.0 media support
+# AndRip 0.3.1 media support
 
 The app saves media that the current browser session can access and that the user is authorized to download. It does not obtain DRM licenses, bypass DRM, solve site challenges, or defeat access restrictions. A detected URL is a candidate, not a guarantee that the server permits a separate download.
+
+## Android compatibility
+
+Android 6.0+ (API 23) is supported by the universal APK; Android 5 and older are not supported. All four common ABIs are included. Both legacy JAR/v1 and APK/v2 signatures are supplied, using the same private key as 0.3.0.
+
+On Android 6–9, exports are saved under AndRip's app-specific external Downloads folder without requesting broad storage permission and opened through FileProvider. They are removed when the app is uninstalled. On Android 10+, exports use shared MediaStore storage. Older devices may support fewer codecs; a supported Android version is not a promise that every media format can be decoded or muxed.
 
 ## Supported and unsupported cases
 
@@ -89,7 +95,7 @@ A physical device/emulator is still required to verify:
 - Real authenticated sources, including Memberful connectivity and a newly discovered authorized Vimeo URL.
 - Foreground notifications, OS constraint changes, process death/reboot recovery, storage exhaustion and launcher masking.
 
-No device was attached during this change. The 0.3.0 regression suite additionally covers referrer/log privacy, renderer replacement, DASH aggregate limits/timing, refreshed queue credentials, deleted outputs, export failure/retry and publication recovery. Passing JVM/Robolectric tests and a successful APK build do not establish those device behaviors.
+No physical device was attached during this change. The 0.3.1 signed-release installation workflow adds emulator checks for Android 6, 9, 10, 15 and 16; the release validation attachment records actual outcomes. The 0.3.0 regression suite additionally covers referrer/log privacy, renderer replacement, DASH aggregate limits/timing, refreshed queue credentials, deleted outputs, export failure/retry and publication recovery. Passing JVM/Robolectric tests and a successful APK build do not establish those device behaviors.
 
 ## References
 
