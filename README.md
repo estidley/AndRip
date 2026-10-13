@@ -1,80 +1,61 @@
-# AndRip
+# AndRip 0.3.0
 
-An Android browser that spots the video stream on a page and saves it.
+An Android browser that discovers media, previews it with seeking, and saves authorized downloads.
 
-Kotlin, Jetpack Compose, WebView, OkHttp, WorkManager, Room. Min Android 10 (API 29).
+Kotlin, Jetpack Compose / Material 3, WebView, Media3, OkHttp, WorkManager and Room.
+Minimum Android 10 (API 29); compile/target SDK 35; JDK 17.
 
-## What works in this first cut
+## Changes in 0.3
 
-- **Browser**: address bar (URL or search), back / forward / reload, opens links from other apps.
-- **Detection**: every request the page makes is checked for HLS (`.m3u8`), DASH (`.mpd`) and
-  direct video files (`.mp4`, `.webm`, `.mov`, `.mkv`, `.m4v`). A small injected script also reports
-  `<video>` sources and `fetch` / XHR URLs. Tap **Videos (n)** to see what was found.
-- **Downloads** (every one ends up as a single file with picture and sound)
-  - Direct files, with resume on retry.
-  - HLS: picks the best quality and fetches segments four at a time. If the audio is in its own
-    playlist, that is downloaded too. Everything is merged into one `.mp4`.
-  - DASH (`.mpd`): best video plus best matching audio, merged into one `.mp4` (or `.webm` for
-    VP9/Opus streams). On-demand manifests only, first period only.
-  - Merging uses Android's own MediaExtractor / MediaMuxer: no re-encoding, no ffmpeg.
-  - Cookies, referer and user agent from the browser are sent along.
-  - Runs as a foreground job with a progress notification; saved to `Movies/AndRip`.
-  - Retry reuses segments already fetched.
-- **Logs**: see below.
+0.3.0 fixes the nine adversarial-review findings: cross-origin referrer disclosure, non-URL log secrets, aggregate DASH memory growth, WebView renderer death, unverified export publication, stale source credentials, deleted-output deduplication, DASH period duration and inherited presentation offsets.
 
-## Not done yet
+Finished transfers have a durable export journal, publication is verified, and **Retry saving** reuses the completed private file. Additional safeguards include low-storage checks, an unmetered-network preference, a 200-source detection cap and compatible DASH audio selection.
 
-- Tabs, fullscreen video, bookmarks/history.
-- Encrypted HLS and live streams are refused with a clear message.
-- Picking a quality or audio language by hand (it always takes the best / default).
+**Installation:** 0.3.0 uses a new private release signing key. Older public-development-key builds must be uninstalled first; this clears their private queue, session and partial files. Copy any data you need before uninstalling. Already exported files should be retained, but back up important videos first. Subsequent releases signed by the new key can update 0.3.0 normally. No app data is removed automatically by this release process.
 
-DRM-protected streams (Widevine, FairPlay, PlayReady) are detected and refused. That is deliberate.
+See [release notes](docs/RELEASE-0.3.0.md) and [signing/release instructions](docs/RELEASING.md).
 
-## Logs and crash reports
+## Changes in 0.2
 
-Everything the app does is written to `files/logs/andrip.log` inside the app's private storage
-(rotates at about 1 MB, keeping one older file).
+0.2.1 adds notification Pause/Cancel actions, tap-to-open Downloads, completion/error notifications, startup queue reconciliation, safe system-stop handling and bounded delayed retries after temporary transfer failures. See the support document for Android scheduling limits and remaining device checks.
 
-- Any uncaught exception on any thread is written with its **full stack trace**, including every
-  `Caused by`, before the app closes.
-- Failed downloads log the full stack trace too; the downloads list only shows the short message.
-- Each app start writes a header with app version, device, Android version and WebView version.
+0.2.2 shows percentage plus segment counts in the foreground progress bar, retains counts through finalization, posts an explicit Download complete notification after saving, and provides notification settings when alerts are disabled.
 
-To send a log: **menu (three dots) > Logs > Share**. That attaches one `andrip-log.txt` file to
-whatever app you pick. After a crash, just reopen the app and share; the crash is already in the file.
+- Preserves browser request context across redirects with origin-scoped credentials and per-URL cookies.
+- Validates file identity and byte ranges before resume; bounded retries, cancellation and clear access-denied errors.
+- Clear HLS/DASH VOD exports with quality preferences, separate audio and segment checkpoint reuse.
+- Persistent deduplicated queue with pause/resume, filters and source-page recovery.
+- In-app Media3 preview with a native scrubber; playback pauses when backgrounded.
+- New teal/mint identity and logo, adaptive/themed launcher icon, media cards and bottom actions.
+- Non-destructive Room migration; URL-redacted logs; tests for transfer, parser and queue behavior.
 
-With a cable instead: `adb logcat -s AndRip` shows the same lines live.
+See [the full protocol support matrix and known limits](docs/MEDIA-SUPPORT.md) before assuming a stream can be downloaded.
+DRM is detected and refused. Live recording, encrypted HLS export, multi-period DASH export and unsupported layouts are not silently converted into partial files.
 
-## Build and release
+## Build and test
 
-Open the folder in Android Studio, or:
-
-```
-./gradlew assembleRelease      # app/build/outputs/apk/release/app-release.apk
-./gradlew testDebugUnitTest    # parser / detector / log tests
+```sh
+./gradlew testDebugUnitTest assembleRelease lintDebug
 ```
 
-GitHub Actions builds and tests every push to `main`. Pushing a version tag publishes the APK
-under Releases:
+Windows uses `gradlew.bat`. Set `JAVA_HOME` to JDK 17 and `ANDROID_HOME` (or local.properties) to an SDK containing platform 35.
+Without private signing variables, the build produces `app-release-unsigned.apk`, which cannot be installed directly. A configured release signer produces `app-release.apk`.
 
-```
-git tag v0.1.0 && git push origin v0.1.0
-```
+The repository development key is used for debug builds only. Official release APKs use a private key supplied through environment variables; no private release key is checked in or uploaded as a release asset.
 
-All builds are signed with `app/andrip-dev.keystore`, a development key kept in the repo so that
-each new APK installs over the last one. Replace it before distributing publicly.
+## Logs
+
+Menu > Logs > Share exports a redacted `andrip-log.txt`. Logs rotate in app-private storage and include failure stack traces.
+URLs are reduced to host names so signed paths and query tokens are not shared. For connected devices: `adb logcat -s AndRip`.
 
 ## Layout
 
-```
-app/src/main/java/com/andrip/browser/
-  AndRipApp.kt            installs the logger + crash handler
-  MainActivity.kt         owns the WebView
-  browser/                WebView setup, request interception, injected script, view model
-  detect/MediaDetector.kt URL / MIME classification
-  download/               HLS + DASH parsers, download engine, Remuxer (audio/video merge),
-                          WorkManager worker, MediaStore saving
-  data/Downloads.kt       Room table for the queue
-  log/                    LogFile (rotating file) and AppLog (logcat + file + share)
-  ui/AndRipScreen.kt      Compose UI: browser bar, video sheet, downloads, logs
-```
+- `browser/`: WebView hooks, session state and external-browser recovery.
+- `detect/`: URL/MIME classification and known DRM/fragment checks.
+- `download/`: HTTP policy, tested byte transfers, HLS/DASH parsing, remuxing, worker and queue.
+- `data/`: Room queue and schema migration.
+- `ui/`: Compose browser, media list, downloads and Media3 preview.
+- `docs/`: protocol matrix and visual design specification.
+
+Figma skills were available but no Figma execution tools were exposed. The local HTML design specification is included instead.
+Device playback/remuxing and real authenticated websites still need a physical-device smoke test.

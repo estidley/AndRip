@@ -1,0 +1,5 @@
+Tool: built-in image_gen (transparent PNG; no CLI/API fallback).
+The generated PNG is copied unchanged into Android drawable-nodpi resources.
+Android scales and masks it using its adaptive-icon resource, with a pale mint background.
+
+Use case: logo-brand. Create one polished, flat, vector-friendly symbol for AndRip, an Android app for discovering, previewing and saving authorized audio and video. New logo, no wordmark and no text. Form a distinctive rounded angular ribbon: a right-facing play triangle integrated with a downward motion into a compact U-shaped save tray; the whole silhouette should feel like a flowing capital A without literal lettering. Extremely simple, bold, balanced, recognizable at 32 pixels. Use only deep teal #006B5E and mint #8DD9CC, with deep teal dominant. No gradients, no shadows, no texture, no 3D, no mockup, no outlines around the canvas, no outer app tile. True transparent background. Square canvas, center the entire mark in the middle 60 percent of the canvas, leaving generous equal transparent padding on all sides for Android adaptive icon masking. One single symbol only.

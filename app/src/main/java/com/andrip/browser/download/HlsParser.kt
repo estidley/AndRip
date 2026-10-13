@@ -53,7 +53,7 @@ object HlsParser {
     private val attribute = Regex("([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)")
 
     fun parse(text: String, baseUrl: String): HlsPlaylist {
-        val lines = text.removePrefix("﻿").lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        val lines = text.removePrefix("\uFEFF").lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
         if (lines.firstOrNull()?.startsWith("#EXTM3U") != true) {
             throw IOException("Not an HLS playlist (missing #EXTM3U): $baseUrl")
         }
@@ -112,6 +112,8 @@ object HlsParser {
         var pendingStart = 0L
         var pendingLength: Long? = null
         var nextOffset = 0L
+        var previousUrl: String? = null
+        var implicitOffset = false
 
         for (line in lines) {
             when {
@@ -121,16 +123,23 @@ object HlsParser {
                 line.startsWith("#EXT-X-KEY:") ->
                     protection = maxOf(protection, protectionOf(attributes(line)))
 
+                line == "#EXT-X-DISCONTINUITY" || line == "#EXT-X-GAP" ->
+                    throw UnsupportedStreamException("This playlist changes its timeline or contains missing segments. Saving it is not supported yet; try preview playback.")
+
                 line.startsWith("#EXT-X-MAP:") -> {
                     val a = attributes(line)
                     val uri = a["URI"]
-                    if (uri != null && init == null) {
+                    if (uri == null) throw IOException("HLS initialization segment has no URI")
+                    run {
                         val range = parseRange(a["BYTERANGE"], 0L)
-                        init = MediaSegment(resolve(baseUrl, uri), range?.second, range?.first)
+                        val next = MediaSegment(resolve(baseUrl, uri), range?.second, range?.first)
+                        if (init != null && init != next) throw UnsupportedStreamException("Changing HLS initialization segments are not supported for saving.")
+                        init = next
                     }
                 }
 
                 line.startsWith("#EXT-X-BYTERANGE:") -> {
+                    implicitOffset = !line.substringAfter(':').contains('@')
                     val range = parseRange(line.substringAfter(':'), nextOffset)
                     if (range != null) {
                         pendingLength = range.first
@@ -143,6 +152,9 @@ object HlsParser {
                 line.startsWith("#") -> Unit
 
                 else -> {
+                    if (segments.size >= 100_000) throw IOException("HLS playlist lists too many segments")
+                    val resolved = resolve(baseUrl, line)
+                    if (implicitOffset && (previousUrl != resolved || nextOffset == 0L)) throw IOException("HLS byte range has no valid preceding range")
                     val length = pendingLength
                     if (length != null) {
                         segments.add(MediaSegment(resolve(baseUrl, line), pendingStart, length))
@@ -152,6 +164,8 @@ object HlsParser {
                         nextOffset = 0L
                     }
                     pendingLength = null
+                    implicitOffset = false
+                    previousUrl = resolved
                 }
             }
         }
@@ -160,9 +174,10 @@ object HlsParser {
 
     /** "length[@offset]" -> (length, offset). */
     private fun parseRange(spec: String?, defaultOffset: Long): Pair<Long, Long>? {
-        if (spec.isNullOrBlank()) return null
-        val length = spec.substringBefore('@').trim().toLongOrNull() ?: return null
-        val offset = if (spec.contains('@')) spec.substringAfter('@').trim().toLongOrNull() ?: defaultOffset else defaultOffset
+        if (spec == null) return null
+        val length = spec.substringBefore('@').trim().toLongOrNull() ?: throw IOException("Invalid HLS byte range length")
+        val offset = if (spec.contains('@')) spec.substringAfter('@').trim().toLongOrNull() ?: throw IOException("Invalid HLS byte range offset") else defaultOffset
+        if (length <= 0 || offset < 0 || offset > Long.MAX_VALUE - length) throw IOException("Invalid HLS byte range")
         return length to offset
     }
 

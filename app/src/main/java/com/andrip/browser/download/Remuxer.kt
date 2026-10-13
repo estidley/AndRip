@@ -8,6 +8,8 @@ import com.andrip.browser.log.AppLog
 import java.io.File
 import java.io.IOException
 import java.nio.ByteBuffer
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
 /**
  * Combines downloaded streams into one playable file without re-encoding.
@@ -32,7 +34,7 @@ object Remuxer {
     }
 
     /** @return the merged file, created inside [outputDir] as final.mp4 or final.webm. */
-    fun mux(inputs: List<File>, outputDir: File): File {
+    suspend fun mux(inputs: List<File>, outputDir: File): File {
         val sources = ArrayList<Source>()
         try {
             var haveVideo = false
@@ -86,6 +88,7 @@ object Remuxer {
                 val startUs = sources.map { it.extractor.sampleTime }.filter { it >= 0 }.minOrNull() ?: 0L
 
                 while (true) {
+                    coroutineContext.ensureActive()
                     var next: Source? = null
                     for (source in sources) {
                         if (source.done) continue
@@ -97,6 +100,10 @@ object Remuxer {
                         if (next == null || time < next.extractor.sampleTime) next = source
                     }
                     val source = next ?: break
+
+                    if ((source.extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED) != 0) {
+                        throw UnsupportedStreamException("This stream contains encrypted samples and cannot be saved.")
+                    }
 
                     val size = source.extractor.readSampleData(buffer, 0)
                     if (size < 0) {

@@ -12,6 +12,21 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.res.painterResource
+import com.andrip.browser.R
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.Card
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.ui.graphics.Color
+import com.andrip.browser.detect.MediaKind
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -82,6 +97,9 @@ import com.andrip.browser.data.DownloadEntity
 import com.andrip.browser.data.DownloadStatus
 import com.andrip.browser.detect.DetectedMedia
 import com.andrip.browser.log.AppLog
+import com.andrip.browser.download.Notifications
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.andrip.browser.util.UrlInput
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -91,12 +109,9 @@ enum class Screen { BROWSER, DOWNLOADS, LOGS }
 @Composable
 fun AndRipTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
-    val context = LocalContext.current
     val colors = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        dark -> darkColorScheme()
-        else -> lightColorScheme()
+        dark -> darkColorScheme(primary = Color(0xFF8DD9CC), secondary = Color(0xFFB6CCC6), background = Color(0xFF101816), surface = Color(0xFF101816))
+        else -> lightColorScheme(primary = Color(0xFF006B5E), secondary = Color(0xFF4C635D), background = Color(0xFFF5FAF6), surface = Color(0xFFF5FAF6))
     }
     MaterialTheme(colorScheme = colors, content = content)
 }
@@ -107,7 +122,21 @@ fun AndRipScreen(vm: BrowserViewModel, webView: WebView) {
     var screen by rememberSaveable { mutableStateOf(Screen.BROWSER) }
     var showVideos by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    var preview by remember { mutableStateOf<DetectedMedia?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+    val downloads by vm.downloads.collectAsState()
+    LaunchedEffect(vm.openDownloads) {
+        if (vm.openDownloads) {
+            screen = Screen.DOWNLOADS
+            vm.openDownloads = false
+        }
+    }
+    LaunchedEffect(vm.queueMessage) {
+        vm.queueMessage?.let { snackbar.showSnackbar(it); vm.queueMessage = null }
+    }
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) vm.queueMessage = "Progress notifications are off. Enable them from Downloads."
+    }
 
     BackHandler(enabled = screen != Screen.BROWSER || vm.canGoBack) {
         if (screen != Screen.BROWSER) screen = Screen.BROWSER else webView.goBack()
@@ -116,6 +145,19 @@ fun AndRipScreen(vm: BrowserViewModel, webView: WebView) {
     Box(Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.imePadding(),
+            bottomBar = {
+                Surface(tonalElevation = 3.dp) {
+                    Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(onClick = { showVideos = true }, modifier = Modifier.weight(1f)) {
+                            Text(if (vm.detected.isEmpty()) "Find media" else "Media · ${vm.detected.size}")
+                        }
+                        TextButton(onClick = { screen = Screen.DOWNLOADS }, modifier = Modifier.weight(1f)) {
+                            val active = downloads.count { it.status in setOf(DownloadStatus.QUEUED, DownloadStatus.RUNNING) }
+                            Text(if (active > 0) "Downloads · $active" else "Downloads")
+                        }
+                    }
+                }
+            },
             topBar = {
                 BrowserBar(
                     vm = vm,
@@ -125,25 +167,42 @@ fun AndRipScreen(vm: BrowserViewModel, webView: WebView) {
                 )
             },
         ) { padding ->
-            AndroidView(
-                factory = { webView },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-            )
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                AnimatedVisibility(vm.pageError != null) {
+                    Card(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("Connection needs attention", style = MaterialTheme.typography.titleMedium)
+                            Text(vm.pageError.orEmpty(), style = MaterialTheme.typography.bodyMedium)
+                            Row {
+                                TextButton(onClick = { webView.reload() }) { Text("Try again") }
+                                TextButton(onClick = {
+                                    try { com.andrip.browser.browser.ExternalBrowser.open(context, vm.url) }
+                                    catch (_: ActivityNotFoundException) { Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show() }
+                                }) { Text("Open browser") }
+                            }
+                        }
+                    }
+                }
+                AndroidView(factory = { webView }, modifier = Modifier.fillMaxWidth().weight(1f))
+            }
         }
 
         when (screen) {
-            Screen.DOWNLOADS -> DownloadsScreen(vm, onBack = { screen = Screen.BROWSER })
+            Screen.DOWNLOADS -> DownloadsScreen(vm, onBack = { screen = Screen.BROWSER }, onSource = { url -> webView.loadUrl(url); screen = Screen.BROWSER })
             Screen.LOGS -> LogsScreen(onBack = { screen = Screen.BROWSER })
             Screen.BROWSER -> Unit
         }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 80.dp))
     }
 
     if (showVideos) {
         ModalBottomSheet(onDismissRequest = { showVideos = false }) {
             VideoList(
                 videos = vm.detected,
+                onPreview = {
+                    webView.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null)
+                    preview = it
+                },
                 onDownload = { media ->
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                         context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -151,12 +210,12 @@ fun AndRipScreen(vm: BrowserViewModel, webView: WebView) {
                         askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                     vm.download(media)
-                    Toast.makeText(context, "Added to downloads", Toast.LENGTH_SHORT).show()
                     showVideos = false
                 },
             )
         }
     }
+    preview?.let { MediaPreview(it, onDismiss = { preview = null }) }
 }
 
 @Composable
@@ -178,6 +237,11 @@ private fun BrowserBar(
 
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.statusBarsPadding()) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BrandMark()
+                Text("AndRip", style = MaterialTheme.typography.titleMedium)
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -204,9 +268,6 @@ private fun BrowserBar(
                         },
                     ),
                 )
-                TextButton(onClick = onShowVideos) {
-                    Text(if (videoCount > 0) "Videos ($videoCount)" else "Videos")
-                }
                 Box {
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
@@ -214,7 +275,7 @@ private fun BrowserBar(
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
                             text = { Text("Reload") },
-                            onClick = { menuOpen = false; webView.reload() },
+                            onClick = { menuOpen = false; if (webView.url == null) webView.loadUrl(vm.url) else webView.reload() },
                         )
                         DropdownMenuItem(
                             text = { Text("Forward") },
@@ -248,53 +309,73 @@ private fun BrowserBar(
 }
 
 @Composable
-private fun VideoList(videos: List<DetectedMedia>, onDownload: (DetectedMedia) -> Unit) {
-    LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
+private fun VideoList(videos: List<DetectedMedia>, onPreview: (DetectedMedia) -> Unit, onDownload: (DetectedMedia) -> Unit) {
+    var maxHeight by rememberSaveable { mutableStateOf<Int?>(null) }
+    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 640.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
-            Text("Videos on this page", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
+            Text("Ready when you are", style = MaterialTheme.typography.headlineSmall)
+            Text("Preview a source, then save media you have permission to download.", style = MaterialTheme.typography.bodyMedium)
         }
-        if (videos.isEmpty()) {
-            item {
-                Text(
-                    "Nothing found yet. Start playing the video, then open this list again.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+        if (videos.any { it.kind != MediaKind.FILE }) item {
+            Text("Stream quality", style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(null, 1080, 720, 480).forEach { height ->
+                    FilterChip(selected = maxHeight == height, onClick = { maxHeight = height }, label = { Text(height?.let { "${it}p" } ?: "Best") })
+                }
+            }
+            Text("Prefers this quality or lower; uses the lowest if unavailable. Audio is chosen automatically.", style = MaterialTheme.typography.bodySmall)
+        }
+        if (videos.isEmpty()) item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Start playing on the page", style = MaterialTheme.typography.titleMedium)
+                    Text("Detected audio, video and streams appear here. Some sites keep their sources private.")
+                }
             }
         }
         items(videos, key = { it.url }) { media ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(media.kind.label, style = MaterialTheme.typography.labelLarge)
-                    Text(
-                        media.url,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(media.pageTitle ?: "Media source", style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    val host = Uri.parse(media.url).host.orEmpty()
+                    Text("${media.kind.label} · $host", style = MaterialTheme.typography.labelMedium)
+                    val file = Uri.parse(media.url).lastPathSegment.orEmpty()
+                    Text(file, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                    if (media.protected) {
+                        Text("DRM protected · Watch on the source website", color = MaterialTheme.colorScheme.error)
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { onPreview(media) }, modifier = Modifier.weight(1f)) { Text("Preview") }
+                            Button(onClick = { onDownload(media.copy(maxHeight = if (media.kind == MediaKind.FILE) null else maxHeight)) }, modifier = Modifier.weight(1f)) { Text("Save") }
+                        }
+                    }
                 }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = { onDownload(media) }) { Text("Download") }
             }
-            HorizontalDivider()
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit) {
+private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit, onSource: (String) -> Unit) {
     val downloads by vm.downloads.collectAsState()
     val context = LocalContext.current
+    var filter by rememberSaveable { mutableStateOf("All") }
+    var notificationsEnabled by remember { mutableStateOf(Notifications.enabled(context)) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        notificationsEnabled = Notifications.enabled(context)
+    }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Downloads") },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BrandMark()
+                        Text("Downloads")
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -309,16 +390,58 @@ private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit) {
                 .padding(padding),
             contentPadding = PaddingValues(16.dp),
         ) {
-            if (downloads.isEmpty()) {
-                item { Text("No downloads yet.", style = MaterialTheme.typography.bodyMedium) }
+            item {
+                Text("Your media, at your pace", style = MaterialTheme.typography.headlineSmall)
+                Text("Downloads continue when you leave AndRip.", style = MaterialTheme.typography.bodyMedium)
+                var unmetered by remember { mutableStateOf(com.andrip.browser.download.DownloadPreferences.unmeteredOnly(context)) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Switch(checked = unmetered, onCheckedChange = {
+                        unmetered = it
+                        com.andrip.browser.download.DownloadPreferences.setUnmeteredOnly(context, it)
+                    })
+                    Column(Modifier.padding(start = 8.dp)) {
+                        Text("Unmetered network only")
+                        Text("Applies to new and resumed downloads", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (!notificationsEnabled) {
+                    Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("See your download progress", style = MaterialTheme.typography.titleMedium)
+                            Text("Enable notifications for the progress bar, segment count and completion message.")
+                            TextButton(onClick = {
+                                try { context.startActivity(Notifications.settingsIntent(context)) }
+                                catch (_: ActivityNotFoundException) { vm.queueMessage = "Open Android Settings > Apps > AndRip > Notifications." }
+                            }) { Text("Enable notifications") }
+                        }
+                    }
+                }
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("All", "Active", "Saved", "Attention").forEach { label ->
+                        FilterChip(selected = filter == label, onClick = { filter = label }, label = { Text(label) })
+                    }
+                }
             }
-            items(downloads, key = { it.id }) { item ->
+            val visible = downloads.filter {
+                when (filter) {
+                    "Active" -> it.status in setOf(DownloadStatus.RUNNING, DownloadStatus.QUEUED, DownloadStatus.PAUSED)
+                    "Saved" -> it.status == DownloadStatus.DONE
+                    "Attention" -> it.status in setOf(DownloadStatus.FAILED, DownloadStatus.CANCELED)
+                    else -> true
+                }
+            }
+            if (visible.isEmpty()) {
+                item { Text("No downloads here yet. Browse a page and tap Find media to get started.", style = MaterialTheme.typography.bodyMedium) }
+            }
+            items(visible, key = { it.id }) { item ->
                 DownloadRow(
                     item = item,
                     onCancel = { vm.cancel(item.id) },
+                    onPause = { vm.pause(item.id) },
+                    onSource = { item.pageUrl?.let(onSource) },
                     onRetry = { vm.retry(item.id) },
                     onRemove = { vm.remove(item.id) },
-                    onOpen = { openVideo(context, item) },
+                    onOpen = { vm.openSaved(item) { openVideo(context, item) } },
                 )
                 HorizontalDivider()
             }
@@ -330,6 +453,8 @@ private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit) {
 private fun DownloadRow(
     item: DownloadEntity,
     onCancel: () -> Unit,
+    onPause: () -> Unit,
+    onSource: () -> Unit,
     onRetry: () -> Unit,
     onRemove: () -> Unit,
     onOpen: () -> Unit,
@@ -347,11 +472,12 @@ private fun DownloadRow(
             overflow = TextOverflow.Ellipsis,
         )
         val status = when (item.status) {
-            DownloadStatus.QUEUED -> "Waiting…"
+            DownloadStatus.QUEUED -> item.error ?: "Waiting for network, storage or a download slot…"
             DownloadStatus.RUNNING -> item.detail.ifEmpty { "Starting…" }
-            DownloadStatus.DONE -> "Saved to Movies/AndRip"
-            DownloadStatus.CANCELED -> "Canceled"
-            else -> "Failed: ${item.error ?: "unknown error"} (details in Logs)"
+            DownloadStatus.DONE -> "Saved on this device"
+            DownloadStatus.PAUSED -> item.error ?: "Paused · progress kept"
+            DownloadStatus.CANCELED -> "Canceled · Remove history to free partial storage"
+            else -> item.error ?: "Download could not finish"
         }
         Text(status, style = MaterialTheme.typography.bodySmall)
         if (item.status == DownloadStatus.RUNNING) {
@@ -364,19 +490,31 @@ private fun DownloadRow(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             when {
-                active -> TextButton(onClick = onCancel) { Text("Cancel") }
+                active -> {
+                    TextButton(onClick = onPause) { Text("Pause") }
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                }
+                item.status == DownloadStatus.PAUSED -> TextButton(onClick = onRetry) { Text("Resume") }
                 item.status == DownloadStatus.DONE -> TextButton(onClick = onOpen) { Text("Open") }
-                else -> TextButton(onClick = onRetry) { Text("Retry") }
+                else -> TextButton(onClick = onRetry) { Text(if (item.error?.startsWith("Retry saving:") == true) "Retry saving" else "Retry") }
             }
-            if (!active) TextButton(onClick = onRemove) { Text("Remove") }
+            if (item.status == DownloadStatus.FAILED && item.pageUrl != null) TextButton(onClick = onSource) { Text("Source page") }
+            if (!active) TextButton(onClick = onRemove) { Text("Remove history") }
         }
+    }
+}
+
+@Composable
+private fun BrandMark() {
+    Surface(shape = CircleShape, color = Color(0xFFF5FAF6)) {
+        Image(painterResource(R.drawable.andrip_logo), contentDescription = "AndRip logo", modifier = Modifier.size(40.dp))
     }
 }
 
 private fun openVideo(context: Context, item: DownloadEntity) {
     val uri = item.outputUri ?: return
     val intent = Intent(Intent.ACTION_VIEW)
-        .setDataAndType(Uri.parse(uri), "video/*")
+        .setDataAndType(Uri.parse(uri), com.andrip.browser.util.FileNames.mimeFor(item.fileName?.substringAfterLast('.').orEmpty()))
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     try {
         context.startActivity(intent)

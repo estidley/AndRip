@@ -40,7 +40,7 @@ object BrowserWebView {
           }
           function scan() {
             try {
-              var nodes = document.querySelectorAll('video, video source');
+              var nodes = document.querySelectorAll('video, video source, audio, audio source');
               for (var i = 0; i < nodes.length; i++) {
                 report(nodes[i].currentSrc || nodes[i].src, nodes[i].type || '');
               }
@@ -55,12 +55,21 @@ object BrowserWebView {
           if (realFetch) {
             window.fetch = function (input) {
               try { report(typeof input === 'string' ? input : (input && input.url), ''); } catch (e) {}
-              return realFetch.apply(this, arguments);
+              return realFetch.apply(this, arguments).then(function (response) {
+                try { report(response.url, response.headers.get('content-type') || ''); } catch (e) {}
+                return response;
+              });
             };
           }
           var realOpen = XMLHttpRequest.prototype.open;
           XMLHttpRequest.prototype.open = function (method, u) {
             try { report(String(u), ''); } catch (e) {}
+            if (!this.__andripObserved) {
+              this.__andripObserved = true;
+              this.addEventListener('load', function () {
+                try { report(this.responseURL, this.getResponseHeader('content-type') || ''); } catch (e) {}
+              });
+            }
             return realOpen.apply(this, arguments);
           };
           try {
@@ -84,7 +93,7 @@ object BrowserWebView {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    fun create(context: Context, vm: BrowserViewModel): WebView {
+    fun create(context: Context, vm: BrowserViewModel, onRendererGone: (WebView) -> Unit): WebView {
         val webView = WebView(context)
         webView.layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -108,7 +117,7 @@ object BrowserWebView {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 try {
                     val headers = request.requestHeaders
-                    vm.report(request.url.toString(), null, headers?.get("Referer") ?: headers?.get("referer"), "network")
+                    vm.report(request.url.toString(), null, headers?.get("Referer") ?: headers?.get("referer"), "network", headers.orEmpty())
                 } catch (e: Exception) {
                     AppLog.w(TAG, "Request inspection failed", e)
                 }
@@ -142,13 +151,28 @@ object BrowserWebView {
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) {
+                    vm.loading = false
+                    vm.pageError = when (error.errorCode) {
+                        ERROR_HOST_LOOKUP -> "The site could not be found. Check your connection, VPN or Private DNS."
+                        ERROR_CONNECT -> "The site refused the connection. Try again or open it in your browser to check sign-in. Browser sign-in may not carry back into AndRip."
+                        else -> "This page could not load. Check your connection and try again."
+                    }
                     AppLog.w(TAG, "Page load error ${error.errorCode} (${error.description}) for ${request.url}")
                 }
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 AppLog.e(TAG, "WebView renderer died (crashed=${detail.didCrash()}) on ${vm.url}")
-                return false
+                (view.parent as? ViewGroup)?.removeView(view)
+                view.removeJavascriptInterface(BRIDGE)
+                view.destroy()
+                vm.onPageStarted(vm.url)
+                onRendererGone(view)
+                vm.loading = false
+                vm.canGoBack = false
+                vm.canGoForward = false
+                vm.pageError = "The page renderer stopped. Tap Reload to reopen this page. Downloads can continue."
+                return true
             }
 
             private fun syncNavigation(view: WebView) {
@@ -170,15 +194,15 @@ object BrowserWebView {
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                 // Only page errors; logging everything would drown the file.
                 if (message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
-                    AppLog.d("Console", "${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                    AppLog.d("Console", "Page JavaScript error (line ${message.lineNumber()}); message omitted for privacy")
                 }
                 return true
             }
         }
 
         // Links the WebView itself would hand to a download manager (Content-Disposition etc).
-        webView.setDownloadListener { url, _, _, mimeType, _ ->
-            vm.report(url, mimeType, null, "download")
+        webView.setDownloadListener { url, userAgent, _, mimeType, _ ->
+            vm.report(url, mimeType, null, "download", mapOf("User-Agent" to userAgent.orEmpty()))
         }
         return webView
     }

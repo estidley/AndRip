@@ -20,7 +20,7 @@ object UrlInput {
 object FileNames {
     private val illegal = Regex("[\\\\/:*?\"<>|\\p{Cntrl}]")
     private val spaces = Regex("\\s+")
-    private val videoExtensions = setOf("mp4", "webm", "m4v", "mov", "mkv")
+    private val videoExtensions = setOf("mp4", "webm", "m4v", "mov", "mkv", "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "ts")
 
     fun sanitize(title: String?): String {
         val clean = (title ?: "")
@@ -44,11 +44,32 @@ object FileNames {
     fun videoExtension(url: String): String =
         extensionOf(url)?.takeIf { it in videoExtensions } ?: "mp4"
 
+    fun extensionForMime(mime: String?): String? = when (mime) {
+        "video/mp4" -> "mp4"
+        "video/webm" -> "webm"
+        "video/quicktime" -> "mov"
+        "video/x-matroska" -> "mkv"
+        "audio/mpeg" -> "mp3"
+        "audio/mp4" -> "m4a"
+        "audio/aac" -> "aac"
+        "audio/ogg" -> "ogg"
+        "audio/flac" -> "flac"
+        "audio/wav", "audio/x-wav" -> "wav"
+        "video/mp2t" -> "ts"
+        else -> null
+    }
+
     fun mimeFor(extension: String): String = when (extension) {
         "mp4", "m4v" -> "video/mp4"
         "webm" -> "video/webm"
         "mov" -> "video/quicktime"
         "mkv" -> "video/x-matroska"
+        "mp3" -> "audio/mpeg"
+        "m4a" -> "audio/mp4"
+        "aac" -> "audio/aac"
+        "ogg", "opus" -> "audio/ogg"
+        "wav" -> "audio/wav"
+        "flac" -> "audio/flac"
         "ts" -> "video/mp2t"
         else -> "video/mp4"
     }

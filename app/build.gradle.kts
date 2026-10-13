@@ -13,18 +13,25 @@ android {
         applicationId = "com.andrip.browser"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 5
+        versionName = "0.3.0"
     }
 
-    // One fixed key for every build, so a newer APK installs over an older one.
-    // It is a throwaway development key that lives in the repo; swap it before publishing anywhere public.
+    // Public development key is for debug builds only. Release keys never belong in this repository.
     signingConfigs {
         create("dev") {
             storeFile = file("andrip-dev.keystore")
             storePassword = "andrip-dev"
             keyAlias = "andrip"
             keyPassword = "andrip-dev"
+        }
+        if (!System.getenv("ANDRIP_KEYSTORE").isNullOrBlank()) {
+            create("privateRelease") {
+                storeFile = file(System.getenv("ANDRIP_KEYSTORE"))
+                storePassword = System.getenv("ANDRIP_STORE_PASSWORD")
+                keyAlias = System.getenv("ANDRIP_KEY_ALIAS")
+                keyPassword = System.getenv("ANDRIP_KEY_PASSWORD")
+            }
         }
     }
 
@@ -34,7 +41,7 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("dev")
+            signingConfig = signingConfigs.findByName("privateRelease")
         }
     }
     lint {
@@ -59,6 +66,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
@@ -74,5 +82,14 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.coroutines.android)
 
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.hls)
+    implementation(libs.media3.dash)
+    implementation(libs.media3.okhttp)
+    implementation(libs.media3.ui)
+    testImplementation(libs.mockwebserver)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.work.testing)
     testImplementation(libs.junit)
 }

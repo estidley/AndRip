@@ -11,43 +11,22 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import okhttp3.Cookie
-import okhttp3.CookieJar
-import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.util.Locale
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
-/** The stream is fine, AndRip just can't (or won't) save it. The message is shown to the user. */
-class UnsupportedStreamException(message: String) : IOException(message)
-
-data class RequestHeaders(val referer: String?, val userAgent: String?)
-
-/** Sends the browser's own cookies with every download request. */
-private class WebViewCookieJar : CookieJar {
-    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) = Unit
-
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
-        val raw: String? = try {
-            CookieManager.getInstance().getCookie(url.toString())
-        } catch (_: Throwable) {
-            null
-        }
-        if (raw.isNullOrEmpty()) return emptyList()
-        return raw.split(';').mapNotNull { Cookie.parse(url, it.trim()) }
-    }
-}
-
+/** One shared connection pool; browser cookies are resolved separately for every redirected URL. */
 object Http {
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .cookieJar(WebViewCookieJar())
+            .addNetworkInterceptor(ContextInterceptor(object : BrowserCookies {
+                override fun get(url: String): String? = CookieManager.getInstance().getCookie(url)
+                override fun set(url: String, cookie: String) { CookieManager.getInstance().setCookie(url, cookie) }
+            }))
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
@@ -56,48 +35,12 @@ object Http {
 
 class DownloadEngine(private val client: OkHttpClient = Http.client) {
 
-    data class Output(val file: File, val extension: String)
+    data class Output(val file: File, val extension: String, val completedSegments: Int? = null)
 
-    /** Plain file download. Resumes from [target]'s current size when the server allows it. */
-    suspend fun downloadFile(
-        url: String,
-        headers: RequestHeaders,
-        target: File,
-        onProgress: (percent: Int, detail: String) -> Unit,
-    ) = withContext(Dispatchers.IO) {
-        target.parentFile?.mkdirs()
-        var existing = if (target.exists()) target.length() else 0L
-        val range = if (existing > 0) "bytes=$existing-" else null
-        client.newCall(request(url, headers, range)).execute().use { response ->
-            if (response.code == 416 && existing > 0) {
-                target.delete()
-                throw IOException("Server refused to resume this download. Tap Retry to start over.")
-            }
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
-            val append = response.code == 206 && existing > 0
-            if (!append) existing = 0L
-            val body = response.body ?: throw IOException("Empty response for $url")
-            val length = body.contentLength()
-            val total = if (length >= 0) existing + length else -1L
-            AppLog.d(TAG, "File: HTTP ${response.code}, total=$total, resumedFrom=$existing, type=${body.contentType()}")
+    private val transfer = MediaTransfer(client)
 
-            FileOutputStream(target, append).use { out ->
-                body.byteStream().use { input ->
-                    val buffer = ByteArray(64 * 1024)
-                    var done = existing
-                    while (true) {
-                        ensureActive()
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        out.write(buffer, 0, read)
-                        done += read
-                        val percent = if (total > 0) (done * 100 / total).toInt() else -1
-                        onProgress(percent, if (total > 0) "${megabytes(done)} of ${megabytes(total)}" else megabytes(done))
-                    }
-                }
-            }
-        }
-    }
+    suspend fun downloadFile(url: String, headers: RequestHeaders, target: File,
+        onProgress: (Int, String) -> Unit) = transfer.file(url, headers, target, onProgress)
 
     /**
      * HLS: picks the best quality, downloads the video (and the separate audio playlist when
@@ -150,9 +93,10 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
         if (manifest.isLive) throw UnsupportedStreamException("This is a live stream. Only finished videos can be saved.")
         val video = manifest.bestVideo(maxHeight)
         val audio = manifest.bestAudio(video)
+        if (manifest.audio.isNotEmpty() && audio == null) throw UnsupportedStreamException("No audio track can share this video's export container. Try another source format.")
         val tracks = listOfNotNull(video, audio)
         if (tracks.isEmpty()) throw IOException("DASH manifest lists no audio or video: $url")
-        if (tracks.any { it.isProtected }) throw drm()
+        if ((manifest.video + manifest.audio).any { it.isProtected }) throw drm()
         AppLog.i(
             TAG,
             "DASH: ${manifest.video.size} video / ${manifest.audio.size} audio qualities; picked " +
@@ -186,30 +130,35 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
     ): Output = coroutineScope {
         workDir.mkdirs()
         val total = plans.sumOf { it.segments.size }
-        val finished = AtomicInteger(0)
+        val progress = SegmentProgress(total, onProgress)
+        progress.start()
         val files = ArrayList<File>()
         for (plan in plans) {
             files.add(
                 downloadTrack(plan, headers, workDir) {
-                    val count = finished.incrementAndGet()
-                    onProgress(count * 100 / total, "$count of $total segments")
+                    progress.segmentDone()
                 },
             )
         }
 
-        onProgress(-1, if (files.size > 1) "Merging audio and video…" else "Finishing up…")
+        progress.finishing(if (files.size > 1) "Merging audio and video…" else "Finishing up…")
         ensureActive()
+        files.forEach { MediaProtection.checkFile(it) }
+        StorageSpace.requireSpace(workDir, files.sumOf { it.length() })
         try {
             val merged = Remuxer.mux(files, workDir)
             files.forEach { it.delete() }
-            Output(merged, merged.extension)
+            Output(merged, merged.extension, total)
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: UnsupportedStreamException) {
             throw e
         } catch (e: Exception) {
             if (files.size > 1) throw IOException("Could not merge the audio and video tracks: ${e.message}", e)
-            // One self-contained stream: the joined download is still playable as it is.
+            if (rawExtension != "ts") throw IOException("This media could not be finalized on this device. Try another quality.", e)
+            // A single TS stream can be saved without changing its container.
             AppLog.w(TAG, "Could not convert to MP4; saving the stream as downloaded (.$rawExtension)", e)
-            Output(files[0], rawExtension)
+            Output(files[0], rawExtension, total)
         }
     }
 
@@ -221,8 +170,19 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
         onSegmentDone: () -> Unit,
     ): File = coroutineScope {
         val dir = File(workDir, plan.name).apply { mkdirs() }
+        val fingerprint = java.security.MessageDigest.getInstance("SHA-256")
+            .digest((plan.init.toString() + plan.segments.joinToString()).toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val identity = File(dir, "identity")
+        if (!identity.exists() || identity.readText() != fingerprint) {
+            dir.deleteRecursively()
+            dir.mkdirs()
+            identity.writeText(fingerprint)
+        }
         val gate = Semaphore(PARALLEL_SEGMENTS)
-        plan.segments.mapIndexed { index, segment ->
+        // Bound both the number of connections and allocated coroutine jobs.
+        plan.segments.withIndex().chunked(PARALLEL_SEGMENTS).forEach { batch ->
+        batch.map { (index, segment) ->
             async {
                 gate.withPermit {
                     ensureActive()
@@ -236,8 +196,10 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
                 }
             }
         }.awaitAll()
+        }
 
         val joined = File(workDir, plan.name + ".bin")
+        StorageSpace.requireSpace(workDir, plan.segments.indices.sumOf { partFile(dir, it).length() })
         FileOutputStream(joined).use { out ->
             plan.init?.let { init ->
                 val initFile = File(dir, "init.tmp")
@@ -249,7 +211,6 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
                 copyInto(partFile(dir, index), out)
             }
         }
-        dir.deleteRecursively()
         joined
     }
 
@@ -257,61 +218,25 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
 
     private fun partFile(dir: File, index: Int) = File(dir, String.format(Locale.US, "seg-%05d.part", index))
 
-    private fun copyInto(source: File, out: OutputStream) {
-        source.inputStream().use { it.copyTo(out, 256 * 1024) }
-    }
-
-    /** @return the body and the URL it finally came from (after redirects), for resolving relative links. */
-    private fun fetchText(url: String, headers: RequestHeaders): Pair<String, String> =
-        client.newCall(request(url, headers, null)).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code} for manifest $url")
-            val body = response.body?.string() ?: throw IOException("Empty manifest: $url")
-            body to response.request.url.toString()
-        }
-
-    private fun fetchSegment(segment: MediaSegment, headers: RequestHeaders, target: File) {
-        val start = segment.rangeStart
-        val length = segment.rangeLength
-        val range = if (start != null && length != null) "bytes=$start-${start + length - 1}" else null
-        var lastError: IOException? = null
-        repeat(SEGMENT_ATTEMPTS) { attempt ->
-            try {
-                client.newCall(request(segment.url, headers, range)).execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("HTTP ${response.code} for segment ${segment.url}")
-                    val body = response.body ?: throw IOException("Empty segment ${segment.url}")
-                    FileOutputStream(target).use { out -> body.byteStream().use { it.copyTo(out, 64 * 1024) } }
-                }
-                return
-            } catch (e: IOException) {
-                lastError = e
-                AppLog.w(TAG, "Segment attempt ${attempt + 1}/$SEGMENT_ATTEMPTS failed: ${e.message}")
+    private suspend fun copyInto(source: File, out: OutputStream) {
+        source.inputStream().use { input ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) {
+                kotlin.coroutines.coroutineContext.ensureActive()
+                val count = input.read(buffer)
+                if (count < 0) break
+                out.write(buffer, 0, count)
             }
         }
-        throw lastError ?: IOException("Segment failed: ${segment.url}")
     }
 
-    private fun request(url: String, headers: RequestHeaders, range: String?): Request {
-        val builder = Request.Builder().url(url)
-        setHeader(builder, "User-Agent", headers.userAgent)
-        setHeader(builder, "Referer", headers.referer)
-        setHeader(builder, "Range", range)
-        return builder.build()
-    }
+    private suspend fun fetchText(url: String, headers: RequestHeaders) = transfer.text(url, headers)
 
-    private fun setHeader(builder: Request.Builder, name: String, value: String?) {
-        if (value.isNullOrEmpty()) return
-        try {
-            builder.header(name, value)
-        } catch (_: IllegalArgumentException) {
-            // OkHttp rejects non-ASCII header values (e.g. a referer with unicode in it); skip it.
-        }
-    }
-
-    private fun megabytes(bytes: Long): String = String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
+    private suspend fun fetchSegment(segment: MediaSegment, headers: RequestHeaders, target: File) =
+        transfer.segment(segment, headers, target)
 
     private companion object {
         const val TAG = "Engine"
         const val PARALLEL_SEGMENTS = 4
-        const val SEGMENT_ATTEMPTS = 3
     }
 }

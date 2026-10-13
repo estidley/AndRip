@@ -1,28 +1,20 @@
 package com.andrip.browser.download
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
-import androidx.core.app.NotificationCompat
-import androidx.work.Constraints
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
+import org.json.JSONObject
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
-import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import androidx.work.workDataOf
 import com.andrip.browser.data.AppDatabase
 import com.andrip.browser.data.DownloadEntity
 import com.andrip.browser.data.DownloadStatus
-import com.andrip.browser.detect.DetectedMedia
 import com.andrip.browser.detect.MediaKind
 import com.andrip.browser.log.AppLog
 import com.andrip.browser.util.FileNames
@@ -34,142 +26,112 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import java.io.File
 import java.io.IOException
-import java.util.UUID
-
-object Notifications {
-    private const val CHANNEL = "downloads"
-
-    fun createChannel(context: Context) {
-        val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Downloads", NotificationManager.IMPORTANCE_LOW),
-        )
-    }
-
-    fun progress(context: Context, workId: UUID, title: String, percent: Int): Notification =
-        NotificationCompat.Builder(context, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle(title)
-            .setContentText(if (percent >= 0) "$percent%" else "Downloading…")
-            .setProgress(100, percent.coerceAtLeast(0), percent < 0)
-            .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                "Cancel",
-                WorkManager.getInstance(context).createCancelPendingIntent(workId),
-            )
-            .build()
-}
-
-/** Queue operations used by the UI. */
-object DownloadQueue {
-    private fun workName(id: Long) = "download-$id"
-
-    suspend fun enqueue(context: Context, media: DetectedMedia): Long {
-        val dao = AppDatabase.get(context).downloads()
-        val id = dao.insert(
-            DownloadEntity(
-                url = media.url,
-                kind = media.kind.name,
-                title = FileNames.sanitize(media.pageTitle),
-                pageUrl = media.pageUrl,
-                referer = media.referer,
-                userAgent = media.userAgent,
-            ),
-        )
-        start(context, id)
-        AppLog.i("Queue", "Queued #$id ${media.kind} ${media.url}")
-        return id
-    }
-
-    suspend fun retry(context: Context, id: Long) {
-        AppDatabase.get(context).downloads().setStatus(id, DownloadStatus.QUEUED, null)
-        start(context, id)
-    }
-
-    fun cancel(context: Context, id: Long) {
-        WorkManager.getInstance(context).cancelUniqueWork(workName(id))
-    }
-
-    suspend fun remove(context: Context, id: Long) {
-        cancel(context, id)
-        AppDatabase.get(context).downloads().delete(id)
-        withContext(Dispatchers.IO) { DownloadWorker.workDir(context, id).deleteRecursively() }
-    }
-
-    private fun start(context: Context, id: Long) {
-        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(workDataOf(DownloadWorker.KEY_ID to id))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(workName(id), ExistingWorkPolicy.REPLACE, request)
-    }
-}
 
 class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     private val dao = AppDatabase.get(context).downloads()
-    private var foregroundFailureLogged = false
 
     override suspend fun doWork(): Result {
         val id = inputData.getLong(KEY_ID, -1L)
+        return WorkerFiles.lock(id).withLock { WorkerFiles.transfers.withPermit { performWork(id) } }
+    }
+
+    private suspend fun performWork(id: Long): Result {
         val item = dao.get(id) ?: return Result.failure()
         val workDir = workDir(applicationContext, id)
         AppLog.i(TAG, "Start #$id ${item.kind} ${item.url} (referer=${item.referer})")
-        dao.setStatus(id, DownloadStatus.RUNNING, null)
-        showProgress(item.title, -1)
-
+        if (dao.transition(id, DownloadQueue.active, DownloadStatus.RUNNING, null) == 0) return Result.success()
+        var transferring = false
         return try {
-            val output = fetch(item, workDir)
+            showProgress(item.title, -1, "Starting download…")
+            val checkpoint = ExportCheckpoint(workDir)
+            val output = withContext(Dispatchers.IO) { checkpoint.output() } ?: run {
+                withContext(Dispatchers.IO) { StorageSpace.requireSpace(workDir) }
+                transferring = true
+                val fetched = fetch(item, workDir)
+                withContext(Dispatchers.IO) {
+                    MediaProtection.checkFile(fetched.file)
+                    checkpoint.record(fetched)
+                }
+                fetched
+            }
+            transferring = false
+            val saving = output.completedSegments?.let { "$it of $it segments · Saving to your device…" }
+                ?: "Saving to your device…"
+            dao.setProgress(id, 100, saving)
+            showProgress(item.title, 100, saving)
+            withContext(Dispatchers.IO) { MediaProtection.checkFile(output.file) }
             val name = "${item.title}.${output.extension}"
             val uri = withContext(Dispatchers.IO) {
-                MediaSaver.save(applicationContext, output.file, name, FileNames.mimeFor(output.extension))
+                MediaSaver.save(applicationContext, output.file, name, FileNames.mimeFor(output.extension), checkpoint.publication).also {
+                    // Commit before switching dispatchers, so cancellation cannot discard a published URI.
+                    withContext(NonCancellable) {
+                        dao.setDone(id, it.toString(), name)
+                        Notifications.completed(applicationContext, id, name, output.completedSegments)
+                    }
+                }
             }
-            workDir.deleteRecursively()
-            dao.setDone(id, uri.toString(), name)
+            withContext(Dispatchers.IO) { workDir.deleteRecursively() }
             AppLog.i(TAG, "Done #$id -> $name ($uri)")
             Result.success()
         } catch (e: CancellationException) {
-            withContext(NonCancellable) { dao.setStatus(id, DownloadStatus.CANCELED, null) }
-            AppLog.i(TAG, "Canceled #$id")
+            withContext(NonCancellable) {
+                // Explicit Pause/Cancel is persisted first. A system stop is resumable.
+                dao.transition(id, listOf(DownloadStatus.RUNNING), DownloadStatus.QUEUED,
+                    "Waiting for network or Android to allow background work.")
+            }
+            AppLog.i(TAG, "Stopped #$id; progress retained")
             throw e
-        } catch (e: Throwable) {
+        } catch (e: Exception) {
             // Full stack trace goes to the log file; the short message goes on screen.
             AppLog.e(TAG, "Failed #$id ${item.kind} ${item.url}", e)
-            dao.setStatus(id, DownloadStatus.FAILED, e.message ?: e.javaClass.simpleName)
-            Result.failure()
+            if (transferring && BackgroundPolicy.shouldRetry(e, runAttemptCount)) {
+                val message = "Connection interrupted. Automatic retry ${runAttemptCount + 1}/${BackgroundPolicy.MAX_RETRIES} is scheduled."
+                dao.transition(id, DownloadQueue.active, DownloadStatus.QUEUED, message)
+                Result.retry()
+            } else {
+                val message = if (runCatching { ExportCheckpoint(workDir).output() }.getOrNull() != null) "Retry saving: ${HttpPolicy.message(e)}" else HttpPolicy.message(e)
+                if (dao.transition(id, DownloadQueue.active, DownloadStatus.FAILED, message) > 0) {
+                    Notifications.result(applicationContext, id, item.title, message)
+                }
+                Result.failure()
+            }
         }
     }
 
     private suspend fun fetch(item: DownloadEntity, workDir: File): DownloadEngine.Output = coroutineScope {
-        val headers = RequestHeaders(item.referer, item.userAgent)
+        val json = JSONObject(item.headersJson)
+        val captured = json.keys().asSequence().associateWith { json.getString(it) }
+        val headers = RequestHeaders(item.referer, item.userAgent, item.url, captured)
+        if (com.andrip.browser.detect.MediaDetector.isProtectedUrl(item.url)) throw UnsupportedStreamException("This stream is DRM-protected and cannot be saved.")
         val engine = DownloadEngine()
         val latest = MutableStateFlow(-1 to "")
         // The engine reports progress very often; write it out at most every 750 ms.
         val reporter = launch {
             latest.collect { (percent, detail) ->
                 dao.setProgress(item.id, percent, detail)
-                showProgress(item.title, percent)
+                showProgress(item.title, percent, detail)
                 delay(750)
             }
         }
         try {
             when (item.kind) {
                 MediaKind.HLS.name ->
-                    engine.downloadHls(item.url, headers, workDir) { percent, detail -> latest.value = percent to detail }
+                    engine.downloadHls(item.url, headers, workDir, item.maxHeight) { percent, detail -> latest.value = percent to detail }
 
                 MediaKind.FILE.name -> {
                     val extension = FileNames.videoExtension(item.url)
                     val target = File(workDir, "download.$extension")
-                    engine.downloadFile(item.url, headers, target) { percent, detail -> latest.value = percent to detail }
-                    DownloadEngine.Output(target, extension)
+                    val mime = engine.downloadFile(item.url, headers, target) { percent, detail -> latest.value = percent to detail }
+                    DownloadEngine.Output(target, FileNames.extensionForMime(mime) ?: extension)
                 }
 
                 MediaKind.DASH.name ->
-                    engine.downloadDash(item.url, headers, workDir) { percent, detail -> latest.value = percent to detail }
+                    engine.downloadDash(item.url, headers, workDir, item.maxHeight) { percent, detail -> latest.value = percent to detail }
 
                 else -> throw UnsupportedStreamException("${item.kind} streams aren't supported.")
             }
@@ -178,23 +140,19 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
         }
     }
 
-    private suspend fun showProgress(title: String, percent: Int) {
+    private suspend fun showProgress(title: String, percent: Int, detail: String) {
         try {
             setForeground(
                 ForegroundInfo(
                     NOTIFICATION_BASE + (inputData.getLong(KEY_ID, 0L) % 100_000).toInt(),
-                    Notifications.progress(applicationContext, id, title, percent),
+                    Notifications.progress(applicationContext, inputData.getLong(KEY_ID, -1), title, percent, detail),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
                 ),
             )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Not fatal: the download just runs without a notification.
-            if (!foregroundFailureLogged) {
-                foregroundFailureLogged = true
-                AppLog.w(TAG, "Could not show the download notification", e)
-            }
+            throw IllegalStateException("Android could not start the download notification/service. Open AndRip and tap Retry.", e)
         }
     }
 
@@ -203,53 +161,88 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
         private const val TAG = "Download"
         private const val NOTIFICATION_BASE = 4000
 
-        fun workDir(context: Context, id: Long) = File(context.cacheDir, "downloads/$id")
+        fun workDir(context: Context, id: Long) = File(context.noBackupFilesDir, "downloads/$id")
     }
 }
 
-/** Copies a finished download into shared storage so it shows up in the gallery and Files. */
+/** Publishes only verified bytes. A durable token recovers even an insert-before-journal process death. */
 object MediaSaver {
-    fun save(context: Context, source: File, displayName: String, mimeType: String): Uri = try {
-        insert(
-            context,
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-            Environment.DIRECTORY_MOVIES + "/AndRip",
-            source, displayName, mimeType,
-        )
-    } catch (e: Exception) {
-        AppLog.w("Save", "Movies folder rejected $displayName ($mimeType); using Download instead", e)
-        insert(
-            context,
-            MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-            Environment.DIRECTORY_DOWNLOADS + "/AndRip",
-            source, displayName, mimeType,
-        )
+    suspend fun save(context: Context, source: File, displayName: String, mimeType: String,
+        journal: android.util.AtomicFile = android.util.AtomicFile(File(source.parentFile, "publication.json"))): Uri {
+        val resolver = context.contentResolver
+        val state = ExportCheckpoint.read(journal) ?: JSONObject()
+            .put("token", "andrip-pending-${java.util.UUID.randomUUID()}.${displayName.substringAfterLast('.', "mp4")}")
+            .also { ExportCheckpoint.write(journal, it) }
+        val token = state.getString("token")
+        val movies = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val downloads = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        var uri = state.optString("uri").takeIf { it.isNotEmpty() }?.let(Uri::parse)
+        if (uri == null) {
+            // The private random token is saved before insertion; only rows owned by this app are recovered.
+            for (collection in listOf(movies, downloads)) {
+                resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID),
+                    "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?",
+                    arrayOf(token, context.packageName), null)?.use { cursor ->
+                    if (cursor.moveToFirst()) uri = android.content.ContentUris.withAppendedId(collection, cursor.getLong(0))
+                }
+            }
+        }
+        if (uri == null) {
+            StorageSpace.requireSpace(source.parentFile!!, source.length())
+            fun insert(collection: Uri, folder: String): Uri? = resolver.insert(collection, ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, token)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "$folder/AndRip")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            })
+            uri = try { insert(movies, Environment.DIRECTORY_MOVIES) } catch (_: Exception) { null }
+                ?: insert(downloads, Environment.DIRECTORY_DOWNLOADS)
+                ?: throw IOException("Storage refused to create the saved video.")
+        }
+        val target = checkNotNull(uri)
+        state.put("uri", target.toString())
+        ExportCheckpoint.write(journal, state)
+        val pending = resolver.query(target, arrayOf(MediaStore.MediaColumns.IS_PENDING), null, null, null)?.use {
+            if (it.moveToFirst()) it.getInt(0) else null
+        }
+        if (pending == 0 && verify(context, target, source.length())) return target
+        if (pending == 0) throw IOException("The saved output changed. Remove this history entry and save again.")
+        StorageSpace.requireSpace(source.parentFile!!, source.length())
+        val out = resolver.openOutputStream(target, "wt") ?: throw IOException("Could not open saved output for writing.")
+        out.use { stream -> source.inputStream().use { input ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) {
+                coroutineContext.ensureActive()
+                val count = input.read(buffer)
+                if (count < 0) break
+                stream.write(buffer, 0, count)
+            }
+        } }
+        if (!verify(context, target, source.length())) throw IOException("Saved output size could not be verified. Retry saving.")
+        val published = resolver.update(target, ContentValues().apply {
+            put(MediaStore.MediaColumns.IS_PENDING, 0)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+        }, null, null)
+        if (published != 1) throw IOException("Storage did not publish the saved video. Retry saving.")
+        val visible = resolver.query(target, arrayOf(MediaStore.MediaColumns.IS_PENDING), null, null, null)?.use {
+            it.moveToFirst() && it.getInt(0) == 0
+        } == true
+        if (!visible || !verify(context, target, source.length())) throw IOException("Saved output publication could not be verified. Retry saving.")
+        return target
     }
 
-    private fun insert(
-        context: Context,
-        collection: Uri,
-        relativePath: String,
-        source: File,
-        displayName: String,
-        mimeType: String,
-    ): Uri {
-        val resolver = context.contentResolver
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        val uri = resolver.insert(collection, values) ?: throw IOException("Storage refused to create $displayName")
-        try {
-            val out = resolver.openOutputStream(uri) ?: throw IOException("Could not open $uri for writing")
-            out.use { stream -> source.inputStream().use { it.copyTo(stream, 256 * 1024) } }
-            resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
-            return uri
-        } catch (e: Exception) {
-            resolver.delete(uri, null, null)
-            throw e
+    private fun verify(context: Context, uri: Uri, expected: Long): Boolean = expected > 0 && runCatching {
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize == expected } == true
+    }.getOrDefault(false)
+
+    internal fun discardPending(context: Context, dir: File) {
+        val state = ExportCheckpoint.read(ExportCheckpoint(dir).publication) ?: return
+        val token = state.optString("token")
+        for (collection in listOf(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))) {
+            context.contentResolver.delete(collection,
+                "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.IS_PENDING} = 1 AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?",
+                arrayOf(token, context.packageName))
         }
     }
 }

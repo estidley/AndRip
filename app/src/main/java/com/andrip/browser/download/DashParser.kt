@@ -49,16 +49,27 @@ data class DashManifest(val video: List<DashTrack>, val audio: List<DashTrack>, 
             compareByDescending<DashTrack> { it.isWebm == wantWebm }
                 .thenByDescending { it.mp4Friendly }
                 .thenByDescending { it.bandwidth },
-        ).firstOrNull()
+        ).firstOrNull { video == null || it.isWebm == wantWebm }
     }
 }
 
 /**
  * MPD parser for on-demand DASH: SegmentTemplate (number or timeline based),
- * SegmentList, and single-file representations. First Period only.
+ * SegmentList, and single-file representations. Multi-period exports are explicitly refused.
  */
 object DashParser {
     private const val MAX_SEGMENTS = 100_000
+    private class Budget {
+        var count = 0
+        var chars = 0L
+        fun take(segment: MediaSegment): MediaSegment {
+            if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException()
+            count++
+            chars += segment.url.length
+            if (count > MAX_SEGMENTS || chars > 8_000_000) throw UnsupportedStreamException("DASH segment plan is too large to save safely.")
+            return segment
+        }
+    }
     private val placeholder = Regex("\\$(RepresentationID|Number|Bandwidth|Time)(?:%0(\\d+)d)?\\$")
     private val isoDuration = Regex("P(?:(\\d+)D)?(?:T(?:(\\d+)H)?(?:(\\d+)M)?(?:([\\d.]+)S)?)?")
 
@@ -74,6 +85,9 @@ object DashParser {
     )
 
     fun parse(xml: String, manifestUrl: String): DashManifest {
+        if (xml.length > 4_000_000) throw UnsupportedStreamException("DASH manifest is too large.")
+        val budget = Budget()
+        if (Regex("<!DOCTYPE|<!ENTITY", RegexOption.IGNORE_CASE).containsMatchIn(xml)) throw IOException("DASH manifests cannot contain document types or entities")
         val mpd = try {
             val factory = DocumentBuilderFactory.newInstance()
             try {
@@ -82,7 +96,7 @@ object DashParser {
                 // Not every parser knows this switch; manifests don't need doctypes either way.
             }
             factory.newDocumentBuilder()
-                .parse(InputSource(StringReader(xml.removePrefix("﻿").trim())))
+                .parse(InputSource(StringReader(xml.removePrefix("\uFEFF").trim())))
                 .documentElement
         } catch (e: Exception) {
             throw IOException("Not a readable DASH manifest: $manifestUrl", e)
@@ -91,13 +105,15 @@ object DashParser {
 
         val isLive = mpd.attr("type") == "dynamic"
         val periods = mpd.children("Period")
+        if (periods.size > 1) throw UnsupportedStreamException("Multi-period DASH cannot be saved yet. Try preview playback.")
         val period = periods.firstOrNull() ?: throw IOException("DASH manifest has no Period: $manifestUrl")
+        val periodStart = parseDuration(period.attr("start")) ?: 0.0
         val periodDuration = parseDuration(period.attr("duration"))
-            ?: periods.getOrNull(1)?.let { next ->
-                val start = parseDuration(period.attr("start")) ?: 0.0
-                parseDuration(next.attr("start"))?.minus(start)
-            }
-            ?: parseDuration(mpd.attr("mediaPresentationDuration"))
+            ?: parseDuration(mpd.attr("mediaPresentationDuration"))?.minus(periodStart)
+        if (!periodStart.isFinite() || periodStart < 0 || (periodDuration != null && (!periodDuration.isFinite() || periodDuration <= 0)))
+            throw UnsupportedStreamException("Invalid DASH period interval.")
+        if (period.children("AdaptationSet").sumOf { it.children("Representation").size } > 256)
+            throw UnsupportedStreamException("DASH manifest has too many representations.")
 
         val mpdBase = baseOf(mpd, manifestUrl)
         val periodBase = baseOf(period, mpdBase)
@@ -106,7 +122,7 @@ object DashParser {
 
         for (set in period.children("AdaptationSet")) {
             val setBase = baseOf(set, periodBase)
-            val setProtected = set.children("ContentProtection").isNotEmpty()
+            val setProtected = (mpd.children("ContentProtection") + period.children("ContentProtection") + set.children("ContentProtection")).isNotEmpty()
             for (rep in set.children("Representation")) {
                 val mime = rep.attr("mimeType") ?: set.attr("mimeType") ?: ""
                 val contentType = set.attr("contentType") ?: mime.substringBefore('/')
@@ -116,26 +132,33 @@ object DashParser {
                 val id = rep.attr("id") ?: ""
                 val bandwidth = rep.attr("bandwidth")?.toLongOrNull() ?: 0L
                 val base = baseOf(rep, setBase)
-                val template = templateOf(listOf(period, set, rep))
-                val list = rep.children("SegmentList").firstOrNull() ?: set.children("SegmentList").firstOrNull()
+                val levels = listOf(period, set, rep)
+                for (mode in listOf("SegmentTemplate", "SegmentList", "SegmentBase")) {
+                    val offset = levels.mapNotNull { it.children(mode).firstOrNull()?.attr("presentationTimeOffset") }.lastOrNull()
+                    if (offset != null && offset.toLongOrNull() != 0L)
+                        throw UnsupportedStreamException("DASH presentation offsets are not supported for saving yet. Try preview playback.")
+                }
+                val template = templateOf(levels)
+                val list = rep.children("SegmentList").firstOrNull() ?: set.children("SegmentList").firstOrNull() ?: period.children("SegmentList").firstOrNull()
 
                 val init: MediaSegment?
                 val segments: List<MediaSegment>
                 when {
                     template?.media != null -> {
                         init = template.initialization?.let { MediaSegment(HlsParser.resolve(base, fill(it, id, bandwidth, 0, 0))) }
-                        segments = fromTemplate(template, id, bandwidth, base, periodDuration)
+                        segments = fromTemplate(template, id, bandwidth, base, periodDuration, budget)
                     }
 
                     list != null -> {
                         init = list.children("Initialization").firstOrNull()?.let { ranged(base, it.attr("sourceURL"), it.attr("range")) }
-                        segments = list.children("SegmentURL").map { ranged(base, it.attr("media"), it.attr("mediaRange")) }
+                        segments = list.children("SegmentURL").map { budget.take(ranged(base, it.attr("media"), it.attr("mediaRange"))) }
                     }
 
                     // SegmentBase or nothing at all: the BaseURL is one complete file.
                     else -> {
+                        if (base == manifestUrl) throw UnsupportedStreamException("DASH representation has no media URL or segment plan.")
                         init = null
-                        segments = listOf(MediaSegment(base))
+                        segments = listOf(budget.take(MediaSegment(base)))
                     }
                 }
                 if (segments.isEmpty()) continue
@@ -158,7 +181,7 @@ object DashParser {
         return DashManifest(video, audio, isLive)
     }
 
-    private fun fromTemplate(t: Template, id: String, bandwidth: Long, base: String, periodSeconds: Double?): List<MediaSegment> {
+    private fun fromTemplate(t: Template, id: String, bandwidth: Long, base: String, periodSeconds: Double?, budget: Budget): List<MediaSegment> {
         val media = t.media ?: return emptyList()
         val out = ArrayList<MediaSegment>()
         var number = t.startNumber
@@ -166,30 +189,32 @@ object DashParser {
         val timeline = t.timeline
         if (timeline != null) {
             var time = 0L
-            for (entry in timeline) {
+            for ((entryIndex, entry) in timeline.withIndex()) {
                 if (entry.start != null) time = entry.start
-                if (entry.duration <= 0) continue
+                if (time < 0 || t.startNumber < 0) throw UnsupportedStreamException("Invalid DASH segment timing.")
+                if (entry.duration <= 0 || entry.repeat < -1 || entry.repeat >= MAX_SEGMENTS) throw IOException("Invalid DASH timeline duration or repeat count")
                 val count = if (entry.repeat >= 0) entry.repeat + 1 else {
                     // r = -1 means "repeat until the end of the period".
-                    val end = ((periodSeconds ?: 0.0) * t.timescale).toLong()
+                    val end = timeline.getOrNull(entryIndex + 1)?.start ?: ((periodSeconds ?: throw IOException("Unbounded DASH timeline")) * t.timescale).toLong()
+                    if (end <= time) throw IOException("Invalid DASH timeline boundary")
                     ceil((end - time).coerceAtLeast(0).toDouble() / entry.duration).toInt().coerceAtLeast(1)
                 }
                 repeat(count) {
                     if (out.size >= MAX_SEGMENTS) throw IOException("DASH manifest lists too many segments")
-                    out.add(MediaSegment(HlsParser.resolve(base, fill(media, id, bandwidth, number, time))))
-                    number++
-                    time += entry.duration
+                    out.add(budget.take(MediaSegment(HlsParser.resolve(base, fill(media, id, bandwidth, number, time)))))
+                    number = Math.addExact(number, 1)
+                    time = Math.addExact(time, entry.duration)
                 }
             }
             return out
         }
 
-        val duration = t.duration ?: return listOf(MediaSegment(HlsParser.resolve(base, fill(media, id, bandwidth, number, 0))))
+        val duration = t.duration ?: throw UnsupportedStreamException("DASH template has no timeline or segment duration.")
         val seconds = periodSeconds ?: throw IOException("DASH manifest doesn't say how long the video is")
         val count = ceil(seconds * t.timescale / duration).toInt()
-        if (count > MAX_SEGMENTS) throw IOException("DASH manifest lists too many segments")
+        if (count <= 0 || count > MAX_SEGMENTS) throw IOException("DASH manifest lists too many segments")
         for (index in 0 until count) {
-            out.add(MediaSegment(HlsParser.resolve(base, fill(media, id, bandwidth, number + index, index * duration))))
+            out.add(budget.take(MediaSegment(HlsParser.resolve(base, fill(media, id, bandwidth, Math.addExact(number, index.toLong()), Math.multiplyExact(index.toLong(), duration))))))
         }
         return out
     }
@@ -198,6 +223,7 @@ object DashParser {
     private fun templateOf(levels: List<Element>): Template? {
         val templates = levels.mapNotNull { it.children("SegmentTemplate").firstOrNull() }
         if (templates.isEmpty()) return null
+        // Effective offsets for every addressing mode are checked before expansion.
         fun pick(name: String): String? = templates.lastOrNull { it.attr(name) != null }?.attr(name)
         val timeline = templates.lastOrNull { it.children("SegmentTimeline").isNotEmpty() }
             ?.children("SegmentTimeline")?.first()?.children("S")
@@ -221,7 +247,7 @@ object DashParser {
     internal fun fill(template: String, id: String, bandwidth: Long, number: Long, time: Long): String =
         placeholder.replace(template) { match ->
             val width = match.groupValues[2].toIntOrNull()
-            fun padded(value: Long) = if (width != null) value.toString().padStart(width, '0') else value.toString()
+            fun padded(value: Long) = if (width != null) value.toString().padStart(width.coerceIn(0, 20), '0') else value.toString()
             when (match.groupValues[1]) {
                 "RepresentationID" -> id
                 "Number" -> padded(number)
@@ -234,6 +260,7 @@ object DashParser {
         val resolved = if (url.isNullOrEmpty()) base else HlsParser.resolve(base, url)
         val start = range?.substringBefore('-')?.trim()?.toLongOrNull()
         val end = range?.substringAfter('-', "")?.trim()?.toLongOrNull()
+        if (range != null && (start == null || end == null || start < 0 || end < start || end == Long.MAX_VALUE)) throw IOException("Invalid DASH byte range")
         return if (start != null && end != null && end >= start) MediaSegment(resolved, start, end - start + 1)
         else MediaSegment(resolved)
     }

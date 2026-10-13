@@ -21,11 +21,16 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 
 class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
     private val mainThread = Handler(Looper.getMainLooper())
     private val dao = AppDatabase.get(app).downloads()
 
+    var pageError by mutableStateOf<String?>(null)
+    var queueMessage by mutableStateOf<String?>(null)
+    var openDownloads by mutableStateOf(false)
+    @Volatile private var pageGeneration = 0L
     var url by mutableStateOf(UrlInput.HOME)
     var title by mutableStateOf("")
     var progress by mutableIntStateOf(0)
@@ -43,6 +48,8 @@ class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
         dao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun onPageStarted(newUrl: String) {
+        pageGeneration++
+        pageError = null
         url = newUrl
         loading = true
         progress = 0
@@ -54,10 +61,14 @@ class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
      * Called for every request the page makes and every URL the injected script reports.
      * Safe from any thread: classification happens here, the list is updated on the main thread.
      */
-    fun report(mediaUrl: String, mimeType: String?, referer: String?, source: String) {
+    fun report(mediaUrl: String, mimeType: String?, referer: String?, source: String, headers: Map<String, String> = emptyMap()) {
         val kind = MediaDetector.classify(mediaUrl, mimeType) ?: return
+        val generation = pageGeneration
         mainThread.post {
-            if (detected.none { it.url == mediaUrl }) {
+            if (generation != pageGeneration) return@post
+            val previous = detected.indexOfFirst { it.url == mediaUrl }
+            if (previous < 0) {
+                if (detected.size >= 200) return@post
                 detected.add(
                     DetectedMedia(
                         url = mediaUrl,
@@ -67,25 +78,59 @@ class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
                         referer = referer ?: url,
                         userAgent = userAgent,
                         source = source,
+                        headers = com.andrip.browser.download.RequestHeaders.capture(headers),
                     ),
                 )
                 AppLog.i(TAG, "Found $kind via $source: $mediaUrl")
+            } else if (source == "network") {
+                detected[previous] = detected[previous].copy(referer = referer ?: detected[previous].referer,
+                    headers = com.andrip.browser.download.RequestHeaders.capture(headers), source = source)
             }
         }
     }
 
     fun download(media: DetectedMedia) {
-        viewModelScope.launch { DownloadQueue.enqueue(app, media) }
+        viewModelScope.launch {
+            try {
+                val result = DownloadQueue.enqueue(app, media)
+                queueMessage = when (dao.get(result)?.status) {
+                    com.andrip.browser.data.DownloadStatus.DONE -> "Already saved on this device"
+                    com.andrip.browser.data.DownloadStatus.RUNNING -> "Already downloading"
+                    else -> "Download #$result queued with the current source details"
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { queueMessage = e.message ?: "Could not add download" }
+        }
     }
 
     fun retry(id: Long) {
-        viewModelScope.launch { DownloadQueue.retry(app, id) }
+        queueAction { DownloadQueue.retry(app, id) }
     }
 
-    fun cancel(id: Long) = DownloadQueue.cancel(app, id)
+    fun openSaved(item: DownloadEntity, open: () -> Unit) {
+        queueAction {
+            if (kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.andrip.browser.download.SavedOutput.readable(app, item.outputUri) }) open()
+            else {
+                dao.transition(item.id, listOf(com.andrip.browser.data.DownloadStatus.DONE), com.andrip.browser.data.DownloadStatus.FAILED, "Saved file is missing. Tap Retry to download again.")
+                queueMessage = "Saved file is missing. Tap Retry to download again."
+            }
+        }
+    }
+
+    fun cancel(id: Long) { queueAction { DownloadQueue.cancel(app, id) } }
+
+    fun pause(id: Long) { queueAction { DownloadQueue.pause(app, id) } }
 
     fun remove(id: Long) {
-        viewModelScope.launch { DownloadQueue.remove(app, id) }
+        queueAction { DownloadQueue.remove(app, id) }
+    }
+
+    private fun queueAction(action: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { action() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { queueMessage = e.message ?: "Could not update this download" }
+        }
     }
 
     private companion object {

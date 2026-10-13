@@ -1,6 +1,8 @@
 package com.andrip.browser.data
 
 import android.content.Context
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -12,6 +14,7 @@ import androidx.room.RoomDatabase
 import kotlinx.coroutines.flow.Flow
 
 object DownloadStatus {
+    const val PAUSED = "PAUSED"
     const val QUEUED = "QUEUED"
     const val RUNNING = "RUNNING"
     const val DONE = "DONE"
@@ -37,6 +40,8 @@ data class DownloadEntity(
     val error: String? = null,
     val outputUri: String? = null,
     val fileName: String? = null,
+    val headersJson: String = "{}",
+    val maxHeight: Int? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -47,6 +52,19 @@ interface DownloadDao {
 
     @Query("SELECT * FROM downloads WHERE id = :id")
     suspend fun get(id: Long): DownloadEntity?
+
+    @Query("SELECT * FROM downloads WHERE status IN ('QUEUED', 'RUNNING')")
+    suspend fun unfinished(): List<DownloadEntity>
+
+    /** Compare-and-set keeps a late worker update from undoing Pause, Cancel or completion. */
+    @Query("UPDATE downloads SET status = :status, error = :error WHERE id = :id AND status IN (:from)")
+    suspend fun transition(id: Long, from: List<String>, status: String, error: String?): Int
+
+    @Query("SELECT * FROM downloads WHERE url = :url AND (maxHeight = :maxHeight OR (maxHeight IS NULL AND :maxHeight IS NULL)) ORDER BY id DESC LIMIT 1")
+    suspend fun findDuplicate(url: String, maxHeight: Int?): DownloadEntity?
+
+    @Query("UPDATE downloads SET headersJson = :headers, referer = :referer, userAgent = :userAgent, pageUrl = :pageUrl, status = 'QUEUED', error = NULL, progress = -1, detail = '', outputUri = NULL WHERE id = :id AND status NOT IN ('QUEUED', 'RUNNING')")
+    suspend fun refresh(id: Long, headers: String, referer: String?, userAgent: String?, pageUrl: String?): Int
 
     @Insert
     suspend fun insert(item: DownloadEntity): Long
@@ -64,15 +82,23 @@ interface DownloadDao {
     suspend fun delete(id: Long)
 }
 
-@Database(entities = [DownloadEntity::class], version = 1, exportSchema = false)
+@Database(entities = [DownloadEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun downloads(): DownloadDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
 
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE downloads ADD COLUMN headersJson TEXT NOT NULL DEFAULT '{}'")
+                db.execSQL("ALTER TABLE downloads ADD COLUMN maxHeight INTEGER")
+            }
+        }
+
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "andrip.db")
+                .addMigrations(MIGRATION_1_2)
                 .build()
                 .also { instance = it }
         }

@@ -35,7 +35,7 @@ class LogFile(private val dir: File, private val maxBytes: Long = 1_000_000L) {
                 .append(message).append('\n')
             if (error != null) text.append(stackTrace(error))
             FileOutputStream(current, true).use { out ->
-                out.write(text.toString().toByteArray())
+                out.write(Redaction.clean(text.toString()).toByteArray())
                 // Make sure errors actually reach the disk before the process dies.
                 if (error != null) out.fd.sync()
             }
@@ -67,7 +67,7 @@ class LogFile(private val dir: File, private val maxBytes: Long = 1_000_000L) {
     @Synchronized
     fun export(target: File, header: String): File {
         target.parentFile?.mkdirs()
-        target.writeText(header + "\n\n" + readAll())
+        target.writeText(Redaction.clean(header + "\n\n" + readAll()))
         return target
     }
 

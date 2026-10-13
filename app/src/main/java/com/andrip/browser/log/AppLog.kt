@@ -47,12 +47,12 @@ object AppLog {
     fun e(tag: String, message: String, error: Throwable? = null) = log(Log.ERROR, "E", tag, message, error)
 
     private fun log(priority: Int, level: String, tag: String, message: String, error: Throwable?) {
-        val text = if (error != null) message + "\n" + LogFile.stackTrace(error) else message
+        val text = Redaction.clean(if (error != null) message + "\n" + LogFile.stackTrace(error) else message)
         Log.println(priority, LOGCAT_TAG, "$tag: $text")
-        logFile?.write(level, tag, message, error)
+        logFile?.write(level, tag, text)
     }
 
-    fun tail(maxChars: Int = 60_000): String = logFile?.tail(maxChars).orEmpty()
+    fun tail(maxChars: Int = 60_000): String = Redaction.clean(logFile?.tail(maxChars).orEmpty())
 
     fun clear() {
         logFile?.clear()
@@ -63,6 +63,7 @@ object AppLog {
     fun shareIntent(context: Context): Intent? {
         val file = logFile ?: return null
         val export = file.export(File(context.filesDir, "logs/andrip-log.txt"), header)
+        export.writeText(Redaction.clean(export.readText()))
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", export)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
