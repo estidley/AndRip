@@ -11,6 +11,9 @@ import android.webkit.CookieManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import com.andrip.browser.data.AppDatabase
 import com.andrip.browser.data.DownloadStatus
 import com.andrip.browser.detect.DetectedMedia
@@ -38,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Real WorkManager, foreground service, sockets, notifications, extractor and device storage. */
 @RunWith(AndroidJUnit4::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class RealDownloadTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
@@ -134,9 +138,12 @@ class RealDownloadTest {
         assertEquals("Download complete", completed(id)!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         assertEquals(0, completed(id)!!.flags and Notification.FLAG_ONGOING_EVENT)
         assertEquals(segmented, text(completed(id)).contains("segments saved"))
-        verifyMedia(Uri.parse(dao.get(id)!!.outputUri))
+        val row = dao.get(id)!!
+        val uri = Uri.parse(row.outputUri)
+        verifyMedia(uri, row.fileName!!.endsWith(".ts"))
+        verifyPlaybackAndSeek(uri)
     }
-    private fun verifyMedia(uri: Uri) {
+    private fun verifyMedia(uri: Uri, transportStream: Boolean) {
         // Read every sample and seek to the midpoint; a nonempty file alone is not a playable export.
         val extractor = MediaExtractor()
         try {
@@ -155,14 +162,54 @@ class RealDownloadTest {
                     count++
                     if (!extractor.advance()) break
                 }
-                assertTrue("Too few samples on $track: $count (${mimes[track]})", count > 100)
+                // Native TS extraction may group AAC frames into PES buffers. The TS path
+                // has a separate exact-byte assertion and uses Media3 for playback/seeking.
+                val minimum = if (transportStream && mimes[track].startsWith("audio/")) 50 else 100
+                assertTrue("Too few samples on $track: $count (${mimes[track]})", count > minimum)
                 assertTrue("Truncated track $track: $lastTime", lastTime > 22_000_000)
-                extractor.seekTo(12_000_000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                assertTrue("Seek failed on $track", extractor.readSampleData(buffer, 0) > 0)
-                assertTrue(extractor.sampleTime in 10_000_000..14_000_000)
+                if (!transportStream) {
+                    extractor.seekTo(12_000_000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                    assertTrue("Seek failed on $track", extractor.readSampleData(buffer, 0) > 0)
+                    assertTrue(extractor.sampleTime in 10_000_000..14_000_000)
+                }
                 extractor.unselectTrack(track)
             }
         } finally { extractor.release() }
+    }
+
+    private suspend fun verifyPlaybackAndSeek(uri: Uri) {
+        lateinit var player: ExoPlayer
+        instrumentation.runOnMainSync {
+            player = ExoPlayer.Builder(context).build().apply {
+                volume = 0f
+                setMediaItem(MediaItem.fromUri(uri))
+                prepare()
+            }
+        }
+        try {
+            awaitCondition("Media3 prepares the saved output") {
+                var ready = false
+                instrumentation.runOnMainSync {
+                    check(player.playerError == null) { player.playerError.toString() }
+                    ready = player.playbackState == Player.STATE_READY
+                }
+                ready
+            }
+            instrumentation.runOnMainSync {
+                assertTrue("Saved file must be seekable in the app player", player.isCurrentMediaItemSeekable)
+                assertTrue("Saved duration", player.duration in 23_000..26_000)
+                player.seekTo(12_000)
+                player.play()
+            }
+            awaitCondition("Saved media plays after midpoint seek") {
+                var playing = false
+                instrumentation.runOnMainSync {
+                    check(player.playerError == null) { player.playerError.toString() }
+                    playing = player.isPlaying && player.currentPosition >= 13_000
+                }
+                playing
+            }
+        } finally { instrumentation.runOnMainSync { player.release() } }
     }
 
     @Test fun progressiveBackgroundPauseResumeScreenOffAndExactBytes() = runBlocking {
@@ -199,7 +246,8 @@ class RealDownloadTest {
         device.sleep()
         awaitCondition("Segment progress continues with screen off") { (progress(id)?.extras?.getInt(Notification.EXTRA_PROGRESS) ?: 0) > before }
         finish(id, true)
-        if (kind == MediaKind.HLS && dao.get(id)!!.fileName!!.endsWith(".ts")) {
+        if (kind == MediaKind.HLS) {
+            assertTrue("TS HLS should preserve its container", dao.get(id)!!.fileName!!.endsWith(".ts"))
             val expected = (0 until 12).fold(Buffer()) { buffer, index -> buffer.write(fixture("hls/seg%03d.ts".format(java.util.Locale.US, index))) }.readByteArray()
             val saved = context.contentResolver.openInputStream(Uri.parse(dao.get(id)!!.outputUri))!!.use { it.readBytes() }
             assertArrayEquals("TS fallback must preserve every original byte", expected, saved)

@@ -10,7 +10,7 @@ The on-device local HTTP server deliberately slows transfers so tests can observ
 
 - Progressive MP4 follows a redirect that sets a session cookie, continues after Home, pauses through the actual notification PendingIntent, resumes using Range/If-Range, and finishes with the screen off. The saved file's SHA-256 must match the source.
 - HLS and DASH display determinate progress with segment counts, keep progressing with the screen off, recover from a transient segment error, and post a completion result after export.
-- Every successful export must contain both audio and video, readable samples through the end of the source, and readable samples after seeking near the midpoint. This catches truncated media and missing tracks, rather than accepting a nonempty output file.
+- Every successful export must contain both audio and video, readable samples through the end of the source, and successful Media3 playback after seeking near the midpoint. TS audio may be grouped into PES buffers by the native extractor, so its sample-count threshold differs; the TS export must additionally match every original byte.
 - Cancel from the notification stops the worker without exporting or posting completion.
 - HTTP 403 produces an actionable fresh-link error without retry loops, output or a false completion message.
 - Active notifications must be real foreground-service notifications; completion must replace progress with a dismissible result.
@@ -30,6 +30,6 @@ The tests install AndRip and write/delete their own downloads. Use a disposable 
 
 ## Limits
 
-Screen-off testing is not forced Doze, process death, reboot or a multi-hour soak. The tests do not prove audiovisual sync perceptually, decoder playback on every chipset, manufacturer battery-management behavior, full disks, real Memberful/Vimeo authorization, or every supported protocol variant. They verify synthetic H.264/AAC MP4, HLS/TS and DASH/fMP4 paths plus native sample extraction and seeking.
+Screen-off testing is not forced Doze, process death, reboot or a multi-hour soak. The tests do not prove audiovisual sync perceptually, decoder playback on every chipset, manufacturer battery-management behavior, full disks, real Memberful/Vimeo authorization, or every supported protocol variant. They verify synthetic H.264/AAC MP4, HLS/TS and DASH/fMP4 paths plus native extraction and Media3 playback/seeking.
 
 Android can delay or stop scheduled work. In particular, [long-running WorkManager jobs are subject to Android 16 job quotas](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running). AndRip retains resumable state, but does not promise uninterrupted transfers after force-stop or exemption from platform limits.

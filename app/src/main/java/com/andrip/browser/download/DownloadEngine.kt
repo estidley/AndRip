@@ -144,6 +144,13 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
         progress.finishing(if (files.size > 1) "Merging audio and video…" else "Finishing up…")
         ensureActive()
         files.forEach { MediaProtection.checkFile(it) }
+        // Native TS extraction may expose grouped AAC access units. Passing those straight
+        // to MediaMuxer creates an MP4 with incomplete audio. Keep the clear transport stream
+        // intact until we have a demuxer that can reliably split and timestamp every AAC frame.
+        if (rawExtension == "ts") {
+            if (files.size == 1) return@coroutineScope Output(files[0], "ts", total)
+            throw UnsupportedStreamException("Separate TS audio and video cannot be merged safely. Choose an fMP4 HLS or DASH source instead.")
+        }
         StorageSpace.requireSpace(workDir, files.sumOf { it.length() })
         try {
             val merged = Remuxer.mux(files, workDir)
@@ -155,10 +162,7 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
             throw e
         } catch (e: Exception) {
             if (files.size > 1) throw MediaFinalizationException("Could not merge the audio and video tracks: ${e.message}. Try another source format or quality.", e)
-            if (rawExtension != "ts") throw MediaFinalizationException("This media could not be finalized on this device. Try another quality.", e)
-            // A single TS stream can be saved without changing its container.
-            AppLog.w(TAG, "Could not convert to MP4; saving the stream as downloaded (.$rawExtension)", e)
-            Output(files[0], rawExtension, total)
+            throw MediaFinalizationException("This media could not be finalized on this device. Try another quality.", e)
         }
     }
 
