@@ -59,6 +59,7 @@ object Notifications {
     private fun action(context: Context, id: Long, action: String): PendingIntent = PendingIntent.getBroadcast(
         context, 0, Intent(context, DownloadActionReceiver::class.java)
             .setAction(action).setData(Uri.parse("andrip://download/$id"))
+            .addFlags(Intent.FLAG_RECEIVER_FOREGROUND)
             .putExtra(DownloadWorker.KEY_ID, id),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
@@ -70,6 +71,7 @@ object Notifications {
             .setStyle(NotificationCompat.BigTextStyle().bigText(progressText(percent, detail)))
             .setSubText("Downloading")
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(contentIntent(context))
             .setProgress(100, percent.coerceIn(0, 100), percent < 0)
             .setOngoing(true).setOnlyAlertOnce(true)
@@ -107,6 +109,7 @@ class DownloadActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getLongExtra(DownloadWorker.KEY_ID, -1)
         if (id < 0 || intent.action !in setOf(PAUSE, CANCEL)) return
+        AppLog.i("Queue", "Notification ${if (intent.action == PAUSE) "Pause" else "Cancel"} requested for #$id")
         val pending = goAsync()
         scope.launch {
             try {

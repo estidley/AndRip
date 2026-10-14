@@ -52,6 +52,8 @@ class BackgroundTest {
         val cancel = shadowOf(first.actions[1].actionIntent).savedIntent
         assertEquals(DownloadActionReceiver.PAUSE, pause.action)
         assertEquals(DownloadActionReceiver.CANCEL, cancel.action)
+        assertTrue(pause.flags and android.content.Intent.FLAG_RECEIVER_FOREGROUND != 0)
+        assertTrue(cancel.flags and android.content.Intent.FLAG_RECEIVER_FOREGROUND != 0)
         assertEquals(7, pause.getLongExtra(DownloadWorker.KEY_ID, -1))
         assertEquals(7, cancel.getLongExtra(DownloadWorker.KEY_ID, -1))
         assertEquals(DownloadActionReceiver::class.java.name, pause.component!!.className)

@@ -110,8 +110,8 @@ class RealDownloadTest {
             "Device test ${kind.name}", server.url("/watch").toString(), "AndRip-device-test", "test")
         return DownloadQueue.enqueue(context, item).also { ids.add(it) }
     }
-    private suspend fun awaitCondition(description: String, test: suspend () -> Boolean) {
-        try { withTimeout(120_000) { while (!test()) delay(200) } }
+    private suspend fun awaitCondition(description: String, timeoutMs: Long = 120_000, test: suspend () -> Boolean) {
+        try { withTimeout(timeoutMs) { while (!test()) delay(200) } }
         catch (e: Exception) { throw AssertionError("$description; rows=${ids.map { dao.get(it) }}", e) }
     }
     private fun progress(id: Long) = notices.activeNotifications.firstOrNull { it.id == 4000 + (id % 100_000).toInt() }?.notification
@@ -232,7 +232,7 @@ class RealDownloadTest {
         awaitCondition("Progress continues after Home") { (progress(id)?.extras?.getInt(Notification.EXTRA_PROGRESS) ?: 0) > before }
         notificationScreenshot("progressive-progress", "Device test FILE"); device.pressHome()
         progress(id)!!.actions.first { it.title.toString() == "Pause" }.actionIntent.send()
-        awaitCondition("Notification pause stops the service") { dao.get(id)?.status == DownloadStatus.PAUSED && progress(id) == null }
+        awaitCondition("Notification pause stops the service", 10_000) { dao.get(id)?.status == DownloadStatus.PAUSED && progress(id) == null }
         assertNull(completed(id))
         val requestCount = requests.size
         delay(2000)
@@ -275,7 +275,7 @@ class RealDownloadTest {
         val id = enqueue("/redirect.mp4", MediaKind.FILE)
         running(id)
         progress(id)!!.actions.first { it.title.toString() == "Cancel" }.actionIntent.send()
-        awaitCondition("Cancel stops foreground work") { dao.get(id)?.status == DownloadStatus.CANCELED && progress(id) == null }
+        awaitCondition("Cancel stops foreground work", 10_000) { dao.get(id)?.status == DownloadStatus.CANCELED && progress(id) == null }
         delay(1500)
         assertNull(dao.get(id)!!.outputUri)
         assertNull(completed(id))
