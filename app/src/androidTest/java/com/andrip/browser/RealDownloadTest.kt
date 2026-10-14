@@ -152,15 +152,20 @@ class RealDownloadTest {
             assertTrue("Missing video: $mimes", mimes.any { it.startsWith("video/") })
             assertTrue("Missing audio: $mimes", mimes.any { it.startsWith("audio/") })
             for (track in 0 until extractor.trackCount) {
-                extractor.selectTrack(track)
-                extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                // A fresh extractor avoids relying on native TS seeking to rewind between tracks.
+                val reader = MediaExtractor()
+                try {
+                reader.setDataSource(context, uri, null)
+                reader.selectTrack(track)
                 val buffer = ByteBuffer.allocate(2 * 1024 * 1024)
                 var count = 0
                 var lastTime = 0L
-                while (extractor.readSampleData(buffer, 0) >= 0) {
-                    lastTime = maxOf(lastTime, extractor.sampleTime)
+                while (true) {
+                    buffer.clear()
+                    if (reader.readSampleData(buffer, 0) < 0) break
+                    lastTime = maxOf(lastTime, reader.sampleTime)
                     count++
-                    if (!extractor.advance()) break
+                    if (!reader.advance()) break
                 }
                 // Native TS extraction may group AAC frames into PES buffers. The TS path
                 // has a separate exact-byte assertion and uses Media3 for playback/seeking.
@@ -168,11 +173,12 @@ class RealDownloadTest {
                 assertTrue("Too few samples on $track: $count (${mimes[track]})", count > minimum)
                 assertTrue("Truncated track $track: $lastTime", lastTime > 22_000_000)
                 if (!transportStream) {
-                    extractor.seekTo(12_000_000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                    assertTrue("Seek failed on $track", extractor.readSampleData(buffer, 0) > 0)
-                    assertTrue(extractor.sampleTime in 10_000_000..14_000_000)
+                    reader.seekTo(12_000_000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                    buffer.clear()
+                    assertTrue("Seek failed on $track", reader.readSampleData(buffer, 0) > 0)
+                    assertTrue(reader.sampleTime in 10_000_000..14_000_000)
                 }
-                extractor.unselectTrack(track)
+                } finally { reader.release() }
             }
         } finally { extractor.release() }
     }
