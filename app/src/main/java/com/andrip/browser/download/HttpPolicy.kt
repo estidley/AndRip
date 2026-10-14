@@ -12,6 +12,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 class UnsupportedStreamException(message: String) : IOException(message)
+class MediaFinalizationException(message: String, cause: Throwable) : IOException(message, cause)
 class HttpFailure(val code: Int, val retryAfterMs: Long? = null) : IOException(when (code) {
     401, 403 -> "Access denied (HTTP $code). Return to the source page, sign in if needed, play the video and detect a fresh link. The link may have expired or downloads may be restricted."
     404, 410 -> "This media is no longer available (HTTP $code). Reopen the source page to find a fresh link."
@@ -98,6 +99,7 @@ object HttpPolicy {
     fun retryable(error: IOException): Boolean = when (error) {
         is StorageFullException -> false
         is UnsupportedStreamException -> false
+        is MediaFinalizationException -> false
         is HttpFailure -> error.code in setOf(408, 429, 500, 502, 503, 504)
         else -> true
     }

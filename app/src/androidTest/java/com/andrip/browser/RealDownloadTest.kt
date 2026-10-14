@@ -155,7 +155,7 @@ class RealDownloadTest {
                     count++
                     if (!extractor.advance()) break
                 }
-                assertTrue("Too few samples on $track", count > 100)
+                assertTrue("Too few samples on $track: $count (${mimes[track]})", count > 100)
                 assertTrue("Truncated track $track: $lastTime", lastTime > 22_000_000)
                 extractor.seekTo(12_000_000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
                 assertTrue("Seek failed on $track", extractor.readSampleData(buffer, 0) > 0)
@@ -199,6 +199,11 @@ class RealDownloadTest {
         device.sleep()
         awaitCondition("Segment progress continues with screen off") { (progress(id)?.extras?.getInt(Notification.EXTRA_PROGRESS) ?: 0) > before }
         finish(id, true)
+        if (kind == MediaKind.HLS && dao.get(id)!!.fileName!!.endsWith(".ts")) {
+            val expected = (0 until 12).fold(Buffer()) { buffer, index -> buffer.write(fixture("hls/seg%03d.ts".format(java.util.Locale.US, index))) }.readByteArray()
+            val saved = context.contentResolver.openInputStream(Uri.parse(dao.get(id)!!.outputUri))!!.use { it.readBytes() }
+            assertArrayEquals("TS fallback must preserve every original byte", expected, saved)
+        }
         assertTrue("Transient segment error was retried", requests.groupBy { it.path }.any { (path, requests) -> (path!!.endsWith(".ts") || path.endsWith(".m4s")) && requests.size > 1 })
         device.wakeUp(); device.openNotification(); delay(500); screenshot("${kind.name}-completed")
     }

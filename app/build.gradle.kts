@@ -13,8 +13,8 @@ android {
         applicationId = "com.andrip.browser"
         minSdk = 23
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.3.1"
+        versionCode = 7
+        versionName = "0.3.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

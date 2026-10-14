@@ -154,8 +154,8 @@ class DownloadEngine(private val client: OkHttpClient = Http.client) {
         } catch (e: UnsupportedStreamException) {
             throw e
         } catch (e: Exception) {
-            if (files.size > 1) throw IOException("Could not merge the audio and video tracks: ${e.message}", e)
-            if (rawExtension != "ts") throw IOException("This media could not be finalized on this device. Try another quality.", e)
+            if (files.size > 1) throw MediaFinalizationException("Could not merge the audio and video tracks: ${e.message}. Try another source format or quality.", e)
+            if (rawExtension != "ts") throw MediaFinalizationException("This media could not be finalized on this device. Try another quality.", e)
             // A single TS stream can be saved without changing its container.
             AppLog.w(TAG, "Could not convert to MP4; saving the stream as downloaded (.$rawExtension)", e)
             Output(files[0], rawExtension, total)

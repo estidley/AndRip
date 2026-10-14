@@ -85,7 +85,10 @@ object Remuxer {
                 val buffer = ByteBuffer.allocateDirect(bufferSize)
                 val info = MediaCodec.BufferInfo()
                 // Streams rarely start at zero; shift everything so the file does, keeping A/V in sync.
-                val startUs = sources.map { it.extractor.sampleTime }.filter { it >= 0 }.minOrNull() ?: 0L
+                // Negative timestamps can be valid (for example AAC encoder priming in DASH).
+                // Track index, not timestamp sign, distinguishes a sample from end-of-stream.
+                val startUs = sources.filter { it.extractor.sampleTrackIndex >= 0 }
+                    .minOfOrNull { it.extractor.sampleTime } ?: 0L
 
                 while (true) {
                     coroutineContext.ensureActive()
@@ -93,7 +96,7 @@ object Remuxer {
                     for (source in sources) {
                         if (source.done) continue
                         val time = source.extractor.sampleTime
-                        if (time < 0) {
+                        if (source.extractor.sampleTrackIndex < 0) {
                             source.done = true
                             continue
                         }
@@ -111,14 +114,17 @@ object Remuxer {
                         continue
                     }
                     val timeUs = (source.extractor.sampleTime - startUs).coerceAtLeast(0L)
-                    // Audio timestamps must only go forward or the muxer rejects the file.
-                    if (source.isVideo || timeUs > source.lastTimeUs) {
-                        val keyFrame = (source.extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0
-                        info.set(0, size, timeUs, if (keyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
-                        muxer.writeSampleData(source.muxerTrack, buffer, info)
-                        source.lastTimeUs = maxOf(source.lastTimeUs, timeUs)
-                        source.samples++
+                    // TS extractors can assign one PES timestamp to multiple AAC frames.
+                    // Dropping those frames produced a "successful" file with most audio missing.
+                    // Preserve the original TS via the caller's fallback instead of guessing timing.
+                    if (!source.isVideo && timeUs <= source.lastTimeUs) {
+                        throw IOException("Audio timestamps cannot be remuxed without losing samples.")
                     }
+                    val keyFrame = (source.extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                    info.set(0, size, timeUs, if (keyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                    muxer.writeSampleData(source.muxerTrack, buffer, info)
+                    source.lastTimeUs = maxOf(source.lastTimeUs, timeUs)
+                    source.samples++
                     if (!source.extractor.advance()) source.done = true
                 }
                 muxer.stop()

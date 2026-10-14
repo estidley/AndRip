@@ -111,6 +111,7 @@ class BackgroundTest {
         for (code in listOf(401, 403, 404, 410)) assertFalse(BackgroundPolicy.shouldRetry(HttpFailure(code), 0))
         assertFalse(BackgroundPolicy.shouldRetry(UnsupportedStreamException("DRM"), 0))
         assertFalse(BackgroundPolicy.shouldRetry(IllegalStateException("foreground"), 0))
+        assertFalse(BackgroundPolicy.shouldRetry(MediaFinalizationException("Cannot merge these tracks", IOException("mux")), 0))
     }
 
     @Test fun accessDeniedIsTerminalWithFreshLinkGuidance() = runBlocking {

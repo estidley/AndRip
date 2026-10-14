@@ -1,4 +1,8 @@
-# AndRip 0.3.1
+# AndRip 0.3.2
+
+## Download verification update in 0.3.2
+
+Real emulator downloads exposed audio loss in HLS-to-MP4 conversion and negative-timestamp handling in DASH on newer Android versions. The exporter now preserves a clear single-track-plan HLS source as TS when Android cannot remux its audio timestamps safely, and recognizes DASH encoder-priming samples instead of treating them as end-of-stream. Merge errors are reported as finalization failures rather than retried as connection errors. See [device test coverage](docs/DOWNLOAD-DEVICE-TESTS.md) and [release notes](docs/RELEASE-0.3.2.md).
 
 An Android browser that discovers media, previews it with seeking, and saves authorized downloads.
 

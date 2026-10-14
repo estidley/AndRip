@@ -1,4 +1,4 @@
-# AndRip 0.3.1 media support
+# AndRip 0.3.2 media support
 
 The app saves media that the current browser session can access and that the user is authorized to download. It does not obtain DRM licenses, bypass DRM, solve site challenges, or defeat access restrictions. A detected URL is a candidate, not a guarantee that the server permits a separate download.
 
@@ -88,12 +88,14 @@ The app uses a fixed teal/mint palette in light and dark modes, Material 3 contr
 
 Run `./gradlew testDebugUnitTest assembleRelease lintDebug` with JDK 17 and Android SDK 35. Automated tests exercise parsers, DRM/fragment detection, redirect credential scoping, cookies, signed URL preservation, range validation, interrupted/resumed transfers, retry policy, cancellation, database migration and real Room/WorkManager queue operations under Robolectric. Background tests run the worker against local mock servers to verify terminal 403 behavior, bounded delayed retries, foreground-service rejection and system/user cancellation. Queue tests cover missing scheduling, stale Running rows and saved-row race guards. Mock servers supply test media bytes; tests do not access a user's accounts.
 
-A physical device/emulator is still required to verify:
+The [real download instrumentation suite](DOWNLOAD-DEVICE-TESTS.md) now exercises actual foreground-service notifications, screen-off transfers, pause/resume/cancel, native extraction/remuxing, device exports and seeking with generated H.264/AAC media. Consult the release's attached reports for the tested revision and outcomes. Clear single-plan HLS sources with repeated audio timestamps are preserved byte-for-byte as TS instead of dropping audio frames during MP4 conversion. DASH samples with negative encoder-priming timestamps are retained and normalized with the other tracks. Finalization errors no longer trigger automatic connection retries.
+
+Further physical-device/emulator work is still required to verify:
 
 - Actual video/audio playback, seeking, accessibility at large font sizes and landscape layouts.
 - HLS/DASH decoding and remux correctness, A/V synchronization and export on representative devices.
 - Real authenticated sources, including Memberful connectivity and a newly discovered authorized Vimeo URL.
-- Foreground notifications, OS constraint changes, process death/reboot recovery, storage exhaustion and launcher masking.
+- OS constraint changes, process death/reboot recovery, storage exhaustion, manufacturer-specific background restrictions and launcher masking.
 
 No physical device was attached during this change. The 0.3.1 signed-release installation workflow adds emulator checks for Android 6, 9, 10, 15 and 16; the release validation attachment records actual outcomes. The 0.3.0 regression suite additionally covers referrer/log privacy, renderer replacement, DASH aggregate limits/timing, refreshed queue credentials, deleted outputs, export failure/retry and publication recovery. Passing JVM/Robolectric tests and a successful APK build do not establish those device behaviors.
 
