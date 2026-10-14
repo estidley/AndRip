@@ -11,6 +11,8 @@ import android.webkit.CookieManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Until
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -85,7 +87,7 @@ class RealDownloadTest {
                     }).setBody(Buffer().write(bytes, offset, bytes.size - offset))
                 if (offset > 0) response.setResponseCode(206).setHeader("Content-Range", "bytes $offset-${bytes.size - 1}/${bytes.size}")
                 if (path == "movie.mp4") response.throttleBody(32 * 1024, 250, TimeUnit.MILLISECONDS)
-                if (path.endsWith(".ts") || path.endsWith(".m4s")) response.setBodyDelay(2, TimeUnit.SECONDS)
+                if (path.endsWith(".ts") || path.endsWith(".m4s")) response.setBodyDelay(3, TimeUnit.SECONDS)
                 return response
             }
         }
@@ -115,7 +117,11 @@ class RealDownloadTest {
     private fun progress(id: Long) = notices.activeNotifications.firstOrNull { it.id == 4000 + (id % 100_000).toInt() }?.notification
     private fun completed(id: Long) = notices.activeNotifications.firstOrNull { it.tag == "download-result-$id" }?.notification
     private fun text(n: Notification?) = n?.extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-    private fun screenshot(name: String) {
+    private fun notificationScreenshot(name: String, title: String) {
+        device.waitForIdle(1000)
+        device.openNotification()
+        assertTrue("Notification must be visible in Android's drawer: $title",
+            device.wait(Until.hasObject(By.text(title)), 5000))
         val folder = File(context.getExternalFilesDir(null), "download-test-evidence").apply { mkdirs() }
         device.takeScreenshot(File(folder, "$name.png"))
     }
@@ -123,7 +129,8 @@ class RealDownloadTest {
         awaitCondition("Visible foreground progress for $id") {
             val n = progress(id)
             check(dao.get(id)?.status != DownloadStatus.FAILED) { dao.get(id)?.error.orEmpty() }
-            n != null && n.extras.getInt(Notification.EXTRA_PROGRESS) in 1..95
+            n != null && n.extras.getInt(Notification.EXTRA_PROGRESS) in 1..95 &&
+                n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0
         }
         assertTrue(progress(id)!!.flags and Notification.FLAG_FOREGROUND_SERVICE != 0)
         assertEquals(100, progress(id)!!.extras.getInt(Notification.EXTRA_PROGRESS_MAX))
@@ -223,7 +230,7 @@ class RealDownloadTest {
         running(id)
         val before = progress(id)!!.extras.getInt(Notification.EXTRA_PROGRESS)
         awaitCondition("Progress continues after Home") { (progress(id)?.extras?.getInt(Notification.EXTRA_PROGRESS) ?: 0) > before }
-        device.openNotification(); delay(500); screenshot("progressive-progress"); device.pressHome()
+        notificationScreenshot("progressive-progress", "Device test FILE"); device.pressHome()
         progress(id)!!.actions.first { it.title.toString() == "Pause" }.actionIntent.send()
         awaitCondition("Notification pause stops the service") { dao.get(id)?.status == DownloadStatus.PAUSED && progress(id) == null }
         assertNull(completed(id))
@@ -239,7 +246,7 @@ class RealDownloadTest {
         val bytes = context.contentResolver.openInputStream(Uri.parse(dao.get(id)!!.outputUri))!!.use { it.readBytes() }
         assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(fixture("movie.mp4")), MessageDigest.getInstance("SHA-256").digest(bytes))
         assertTrue("Resume must use Range and If-Range", requests.any { it.getHeader("Range") != null && it.getHeader("If-Range") == "\"fixture-v1\"" })
-        device.wakeUp(); device.openNotification(); delay(500); screenshot("progressive-completed")
+        device.wakeUp(); notificationScreenshot("progressive-completed", "Download complete")
     }
 
     private suspend fun segmented(path: String, kind: MediaKind) {
@@ -248,7 +255,7 @@ class RealDownloadTest {
         running(id)
         assertTrue(text(progress(id)).contains("segments"))
         val before = progress(id)!!.extras.getInt(Notification.EXTRA_PROGRESS)
-        device.openNotification(); delay(500); screenshot("${kind.name}-progress"); device.pressHome()
+        notificationScreenshot("${kind.name}-progress", "Device test ${kind.name}"); device.pressHome()
         device.sleep()
         awaitCondition("Segment progress continues with screen off") { (progress(id)?.extras?.getInt(Notification.EXTRA_PROGRESS) ?: 0) > before }
         finish(id, true)
@@ -259,7 +266,7 @@ class RealDownloadTest {
             assertArrayEquals("TS fallback must preserve every original byte", expected, saved)
         }
         assertTrue("Transient segment error was retried", requests.groupBy { it.path }.any { (path, requests) -> (path!!.endsWith(".ts") || path.endsWith(".m4s")) && requests.size > 1 })
-        device.wakeUp(); device.openNotification(); delay(500); screenshot("${kind.name}-completed")
+        device.wakeUp(); notificationScreenshot("${kind.name}-completed", "Download complete")
     }
     @Test fun hlsBackgroundSegmentsRetryAndPlayableExport() = runBlocking { segmented("/hls/media.m3u8", MediaKind.HLS) }
     @Test fun dashBackgroundSeparateAudioVideoAndPlayableExport() = runBlocking { segmented("/dash/media.mpd", MediaKind.DASH) }
