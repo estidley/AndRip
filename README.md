@@ -1,3 +1,7 @@
+# AndRip 1.0.0
+
+Release builds use R8, resource shrinking, and a private upload key. Debug builds stay unminified and use the public development key. `mapping.txt` and `native-debug-symbols.zip` are produced for the release. Commercial DRM still cannot be saved.
+
 # AndRip 0.3.4
 
 ## Stream saving in 0.3.4

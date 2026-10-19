@@ -2,6 +2,8 @@
 
 Official releases from 0.3.0 onward use a private signing key. The public `app/andrip-dev.keystore` is only for debug builds. Never publish an APK signed with it as an official release.
 
+Release builds enable R8 (`isMinifyEnabled`) and `shrinkResources`. Debug builds stay unminified. Release native libraries use NDK 27.2.12479018 and `debugSymbolLevel = SYMBOL_TABLE`, which writes `app/build/outputs/mapping/release/mapping.txt` and `app/build/outputs/native-debug-symbols/release/native-debug-symbols.zip`. Keep rules cover the WebView JavaScript bridge, WorkManager workers, Room types, manifest components, and Media3. Do not upload the keystore or its passwords. Upload the mapping file and native symbol zip with the release so crashes can be retraced.
+
 ## Build
 
 Use JDK 17 and Android SDK platform 35. Run:

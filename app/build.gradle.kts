@@ -8,13 +8,15 @@ plugins {
 android {
     namespace = "com.andrip.browser"
     compileSdk = 35
+    // Side-by-side NDK used to strip prebuilt native libraries and write native-debug-symbols.zip.
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.andrip.browser"
         minSdk = 23
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.3.4"
+        versionCode = 10
+        versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -43,7 +45,15 @@ android {
             signingConfig = signingConfigs.getByName("dev")
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            ndk {
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
             signingConfig = signingConfigs.findByName("privateRelease")
         }
     }
@@ -67,6 +77,27 @@ android {
         unitTests.all {
             it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         }
+    }
+}
+
+// AGP writes native-debug-symbols.zip only when a library still has debug metadata.
+// androidx.graphics.path ships pre-stripped, so package the remaining symbol tables
+// in the Play Console layout (lib/<abi>/*.so) when that zip was not produced.
+val packageReleaseNativeSymbols = tasks.register<org.gradle.api.tasks.bundling.Zip>("packageReleaseNativeSymbols") {
+    group = "build"
+    description = "Native symbol archive for the release. Skipped when AGP already wrote one."
+    dependsOn("mergeReleaseNativeLibs")
+    from(layout.buildDirectory.dir("intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out"))
+    include("lib/**/*.so")
+    archiveFileName.set("native-debug-symbols.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("outputs/native-debug-symbols/release"))
+    onlyIf {
+        !layout.buildDirectory.file("outputs/native-debug-symbols/release/native-debug-symbols.zip").get().asFile.exists()
+    }
+}
+tasks.configureEach {
+    if (name == "assembleRelease" || name == "bundleRelease") {
+        finalizedBy(packageReleaseNativeSymbols)
     }
 }
 
