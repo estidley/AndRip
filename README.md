@@ -1,4 +1,24 @@
-# AndRip 0.3.2
+# AndRip 0.3.3
+
+## Playback, ads, toolbar and privacy in 0.3.3
+
+Opening a page no longer wraps `fetch` or `XMLHttpRequest`. AndRip only watches resource timing and media elements, and `shouldInterceptRequest` returns null for everything except a blocked ad or tracker. Stream manifests and segments are never replaced, so a page player such as JW Player keeps the WebView's normal Origin, Referer, cookies and CORS handling. A separate download still reuses the captured page headers and the WebView cookie jar. DRM is unchanged: protected streams are detected and refused, not bypassed.
+
+The overflow menu and the **Ads** control in the address bar toggle an offline host blocklist (a small EasyList/AdGuard-style set shipped in the APK, plus a few specific cosmetic rules). The choice is remembered. Default is on. Turn it off and reload if a page's own player will not start without its ad SDK.
+
+The address bar stays on screen. It is a single compact row: back, URL, ad-blocker toggle and menu. Downloads stay in that menu and on the bottom bar.
+
+**Delete** on a download asks for confirmation, cancels an in-progress transfer first, deletes the saved file from app storage or MediaStore, and removes the list row. Long-press selects several items, then Delete. **Remove history** still drops the list row and private partials without deleting a finished export.
+
+Browsing data (history, cache, cookies, web storage, form data and saved sign-in for the WebView) is cleared only when the session fully ends:
+
+- Swiping the task away runs a started service's `onTaskRemoved` and clears it immediately.
+- Menu > **Exit and clear browsing data** does the same, then removes the task.
+- If the process is killed before that callback runs, the next cold start sees that the previous session never recorded a clean wipe and clears browsing data before the new page loads.
+
+Switching apps or leaving AndRip in the background does not clear anything while the process is still alive. If Android later kills that process, the following cold start does clear browsing data, because the previous session never finished a wipe. Downloaded files, the download queue, logs and preferences (ad blocker, unmetered-only) are not browsing data and are kept.
+
+See [release notes](docs/RELEASE-0.3.3.md).
 
 ## Download verification update in 0.3.2
 

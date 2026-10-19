@@ -41,6 +41,21 @@ class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
     /** The WebView's user agent, copied onto downloads so servers see the same client. */
     @Volatile var userAgent: String? = null
 
+    private val adBlockState = mutableStateOf(com.andrip.browser.browser.AdBlockPreferences.enabled(app))
+
+    /** WebView's request thread reads this. Compose reads [adBlockEnabled]. */
+    @Volatile private var adBlockSnapshot = adBlockState.value
+
+    var adBlockEnabled: Boolean
+        get() = adBlockState.value
+        set(value) {
+            adBlockSnapshot = value
+            adBlockState.value = value
+            com.andrip.browser.browser.AdBlockPreferences.set(app, value)
+        }
+
+    fun adBlockActive(): Boolean = adBlockSnapshot
+
     /** Videos spotted on the current page. Only touched on the main thread. */
     val detected = mutableStateListOf<DetectedMedia>()
 
@@ -123,6 +138,24 @@ class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun remove(id: Long) {
         queueAction { DownloadQueue.remove(app, id) }
+    }
+
+    /** Cancels an in-progress transfer first, deletes the saved file, then drops the list row. */
+    fun deleteDownloads(ids: Collection<Long>) {
+        queueAction {
+            var failed = 0
+            for (id in ids) {
+                try {
+                    DownloadQueue.delete(app, id)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    failed++
+                    AppLog.w(TAG, "Could not delete download #$id", e)
+                }
+            }
+            if (failed > 0) queueMessage = if (failed == ids.size) "Could not delete the saved file." else "Some files could not be deleted."
+        }
     }
 
     private fun queueAction(action: suspend () -> Unit) {

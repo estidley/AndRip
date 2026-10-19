@@ -117,6 +117,26 @@ object DownloadQueue {
         Notifications.clearResult(context, id)
     }
 
+    /**
+     * Cancel an active transfer, delete the published file (MediaStore or app storage) and the
+     * private partials, then remove the list row. [remove] still keeps a finished export.
+     */
+    suspend fun delete(context: Context, id: Long) = mutex.withLock {
+        cancelLocked(context, id)
+        WorkerFiles.lock(id).withLock {
+            val dao = AppDatabase.get(context).downloads()
+            val item = dao.get(id)
+            withContext(Dispatchers.IO) {
+                val dir = DownloadWorker.workDir(context, id)
+                SavedFileDeleter.deleteAll(context, item?.outputUri, dir)
+                dir.deleteRecursively()
+            }
+            dao.delete(id)
+        }
+        Notifications.clearResult(context, id)
+        AppLog.i("Queue", "Deleted #$id and its saved file")
+    }
+
     /** Repair the small non-transactional gap between Room insertion and WorkManager enqueue. */
     suspend fun recover(context: Context) = mutex.withLock {
         val dao = AppDatabase.get(context).downloads()
