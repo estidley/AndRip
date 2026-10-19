@@ -23,11 +23,12 @@ object FileNames {
     private val videoExtensions = setOf("mp4", "webm", "m4v", "mov", "mkv", "mp3", "m4a", "aac", "ogg", "opus", "wav", "flac", "ts")
 
     fun sanitize(title: String?): String {
-        val clean = (title ?: "")
+        var clean = (title ?: "")
             .replace(illegal, " ")
             .replace(spaces, " ")
-            .trim().trim('.')
-            .take(80).trim()
+            .trim()
+        while (clean.contains("..")) clean = clean.replace("..", ".")
+        clean = clean.trim().trim('.').take(80).trim().trim('.')
         return clean.ifEmpty { "video" }
     }
 

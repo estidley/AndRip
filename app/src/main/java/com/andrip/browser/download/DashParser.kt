@@ -30,7 +30,12 @@ data class DashTrack(
         }
 }
 
-data class DashManifest(val video: List<DashTrack>, val audio: List<DashTrack>, val isLive: Boolean) {
+data class DashManifest(
+    val video: List<DashTrack>,
+    val audio: List<DashTrack>,
+    val isLive: Boolean,
+    val subtitles: List<String> = emptyList(),
+) {
 
     fun bestVideo(maxHeight: Int? = null): DashTrack? {
         val sorted = video.sortedWith(
@@ -119,6 +124,7 @@ object DashParser {
         val periodBase = baseOf(period, mpdBase)
         val video = ArrayList<DashTrack>()
         val audio = ArrayList<DashTrack>()
+        val subtitles = ArrayList<String>()
 
         for (set in period.children("AdaptationSet")) {
             val setBase = baseOf(set, periodBase)
@@ -126,12 +132,22 @@ object DashParser {
             for (rep in set.children("Representation")) {
                 val mime = rep.attr("mimeType") ?: set.attr("mimeType") ?: ""
                 val contentType = set.attr("contentType") ?: mime.substringBefore('/')
+                val mimeLower = mime.lowercase()
+                val base = baseOf(rep, setBase)
+                val isText = contentType == "text" || "vtt" in mimeLower || "ttml" in mimeLower
+                if (isText) {
+                    if ((base.startsWith("http://") || base.startsWith("https://")) &&
+                        base.substringBefore('?') != manifestUrl.substringBefore('?')
+                    ) {
+                        subtitles.add(base)
+                    }
+                    continue
+                }
                 val isVideo = contentType == "video"
                 if (!isVideo && contentType != "audio") continue
 
                 val id = rep.attr("id") ?: ""
                 val bandwidth = rep.attr("bandwidth")?.toLongOrNull() ?: 0L
-                val base = baseOf(rep, setBase)
                 val levels = listOf(period, set, rep)
                 for (mode in listOf("SegmentTemplate", "SegmentList", "SegmentBase")) {
                     val offset = levels.mapNotNull { it.children(mode).firstOrNull()?.attr("presentationTimeOffset") }.lastOrNull()
@@ -178,7 +194,7 @@ object DashParser {
                 if (isVideo) video.add(track) else audio.add(track)
             }
         }
-        return DashManifest(video, audio, isLive)
+        return DashManifest(video, audio, isLive, subtitles)
     }
 
     private fun fromTemplate(t: Template, id: String, bandwidth: Long, base: String, periodSeconds: Double?, budget: Budget): List<MediaSegment> {

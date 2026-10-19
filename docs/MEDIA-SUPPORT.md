@@ -1,4 +1,6 @@
-# AndRip 0.3.2 media support
+# AndRip 0.3.4 media support
+
+The 0.3.4 audit and the fix/deferred table are in [red-team.md](red-team.md). This page is the support matrix.
 
 The app saves media that the current browser session can access and that the user is authorized to download. It does not obtain DRM licenses, bypass DRM, solve site challenges, or defeat access restrictions. A detected URL is a candidate, not a guarantee that the server permits a separate download.
 
@@ -15,18 +17,19 @@ On Android 6–9, exports are saved under AndRip's app-specific external Downloa
 | Progressive HTTP/HTTPS video | MP4, WebM, MOV, MKV, M4V and TS candidates; final media must be readable by the device's MediaExtractor | Media3 playback; seeking depends on the container, server and device codec |
 | Progressive HTTP/HTTPS audio | MP3, M4A, AAC, Ogg/Opus, WAV and FLAC candidates; same device validation | Media3 playback, with seeking where the format permits |
 | Extensionless media | MIME detection from HTML media elements, resource timing, WebView request observation and WebView DownloadListener; MIME determines the saved extension when available. Page script does not wrap fetch or XHR | Explicit HLS/DASH MIME hints passed to Media3 |
-| HLS VOD | Clear master/media playlists, automatic/default separate audio for fMP4; single-plan TS saved intact, or fMP4 with a fixed initialization segment, exact byte ranges, quality preference | Media3 HLS preview and native seek controls |
+| HLS VOD | Clear or AES-128 master/media playlists. Separate audio is downloaded only when the variant does not already list an audio codec. A single TS plan, including discontinuities, is concatenated and kept as TS. fMP4 needs one initialization segment and exact byte ranges. Quality preference still applies. | Media3 HLS preview and native seek controls |
 | DASH VOD | Clear **single-period** MPDs; inherited SegmentTemplate, Number/Time, bounded timelines (including negative repeats ending at the next timeline entry), SegmentList ranges, whole-file BaseURL/SegmentBase representations; one video and compatible audio track | Media3 DASH preview and native seek controls |
 | HTTP redirects | Followed; manifest-relative paths resolve against the final URL; signed URL queries are retained | Same browser-aware OkHttp transport |
 | Cookies and headers | CookieManager consulted for **each actual request URL**; Set-Cookie responses written back; captured referer, UA, Origin and selected headers retained | Same cookie and header context |
 | Byte-range resume | Strong ETag or Last-Modified plus If-Range; validates Content-Range and byte counts. Missing validators, changed content, ignored ranges or ambiguous 416 responses restart safely | Native player manages its own reads |
-| Live HLS/DASH | **Not saved**; no recording or live-to-VOD conversion | May play; seeking limited to the available DVR window |
-| AES-128 HLS | **Not saved** by this exporter (ordinary encryption is reported separately from DRM) | Media3 may play ordinary identity-key AES-128 where the server authorizes key access |
-| Widevine, FairPlay, PlayReady, SAMPLE-AES/CENC | **Not saved**; guards check known protected URLs, manifest declarations, file metadata and encrypted samples before export | No DRM license configuration; protected tracks stop preview |
-| HLS discontinuities, gaps or changing initialization segments | **Not saved**, with an explicit unsupported-layout message | Media3 may preview supported layouts |
+| Live HLS/DASH | The segments listed at save time (the current DVR window) are saved. The app does not keep polling until you press stop. | May play; seeking limited to the available DVR window |
+| AES-128 HLS | Saved. The playlist key is fetched with the same headers and cookies, and each segment is decrypted before it is joined. | Media3 may play ordinary identity-key AES-128 where the server authorizes key access |
+| Widevine, FairPlay, PlayReady, SAMPLE-AES/CENC | **Not saved.** The save error is “Protected content, can't be saved.” Identity SAMPLE-AES (no commercial key format) says sample encryption is not supported yet. No license is requested. | No DRM license configuration; protected tracks stop preview |
+| HLS discontinuities and gaps | Discontinuities are kept and concatenated. EXT-X-GAP segments are skipped. A changing EXT-X-MAP is still refused. | Media3 may preview supported layouts |
 | Multi-period DASH or non-zero presentation-time offsets | **Not saved**, rather than exporting only part of the presentation | Media3 may preview supported layouts |
 | RTMP, RTSP, SmoothStreaming, WebRTC, raw sockets, blob/data URLs | **Not offered for saving** | Not wired into this preview flow |
-| Subtitles, multiple audio-language export, manual codec selection, trimming, transcoding | **Not implemented** | Native playback controls only; no editor or thumbnail scrub strip |
+| Subtitles | The first WebVTT or TTML rendition is saved beside the video when it can be fetched. A subtitle failure does not fail the video. Nothing is burned in. | Native playback controls only; no editor or thumbnail scrub strip |
+| Multiple audio languages, manual codec selection, trimming, transcoding | The default (or first) audio rendition is used when audio is separate. There is no language picker. No trimming or transcoding. | Native playback controls only |
 
 HLS/DASH export retains the existing Android MediaExtractor/MediaMuxer pipeline, which merges compatible clear tracks into MP4 or WebM without re-encoding. Single clear TS streams stay in TS; separate TS audio/video export is unsupported. Other failed merges produce an error rather than a possibly incomplete file. Formats/codecs that Android cannot extract or mux on a particular device can fail even when the manifest layout is supported. This is not a universal stream recorder.
 
@@ -40,7 +43,7 @@ HLS/DASH export retains the existing Android MediaExtractor/MediaMuxer pipeline,
 - WorkManager persists scheduling and Room persists request context. Pause preserves private partial files; resume validates file identity or reuses completed segments only when their complete plan fingerprint matches. Old 0.1 partial files without validators restart instead of being appended blindly.
 - There are at most two active downloads, each with up to four segment requests. Per-download locks prevent a canceled worker and its replacement from writing the same files. Network cancellation closes the current call; copy and merge loops check cancellation.
 - **Remove history** removes a queue row and its private partial data. It does **not** delete a completed export. **Delete** asks for confirmation, cancels an in-progress or paused transfer first, deletes the published MediaStore or app-storage file, then removes the row. A delete that is refused (the path is outside AndRip's export folder, or storage rejects it) keeps the row.
-- Exports normally go to Movies/AndRip, with Download/AndRip as the storage fallback. The UI says “Saved on this device” because either location can be used.
+- Exports try Download/AndRip first and Movies/AndRip if that insert is refused. The UI says “Saved on this device” because either location can be used. On Android 6–9 the file is still the app-specific external Downloads folder.
 - The database migrates from schema 1 to 2 without clearing existing rows. Captured headers and selected quality are added. Private request context is excluded from backup/device transfer rules.
 - Logs redact URL paths/queries, authorization/cookie headers, bearer/basic credentials and common secret fields. Arbitrary page console message bodies are omitted. Crash logs are sanitized before writing; shared logs are sanitized again, including older entries. This is a defensive filter, not a guarantee against every possible encoding of a secret.
 
@@ -62,7 +65,7 @@ HLS/DASH export retains the existing Android MediaExtractor/MediaMuxer pipeline,
 
 ### Notification refinements in 0.2.2
 
-Active transfers use an ongoing foreground notification with a progress bar and explicit percentage. HLS/DASH display counts such as **42% · 84 of 200 segments**. The count includes media segments across the selected audio/video tracks, including matching cached segments retained from an earlier attempt; initialization segments are excluded. Progressive files show bytes instead. Unknown-length downloads use an indeterminate bar.
+Active transfers use an ongoing foreground notification with a progress bar and explicit percentage. HLS/DASH display counts such as **42% · 84 of 200 segments**, plus a rough ETA once the transfer has been moving for at least half a second, and “live window” when the save is a DVR snapshot. The count includes media segments across the selected audio/video tracks, including matching cached segments retained from an earlier attempt; initialization segments are excluded. Progressive files show bytes instead. Unknown-length downloads use an indeterminate bar.
 
 Parallel segment updates are serialized to keep the displayed count from moving backwards. Counts remain visible during merge and saving. **100% means all transfer segments/bytes are available**, and the adjacent status explains finalization; it does not yet mean the export is complete. Only after publishing the saved file and committing its queue row does the app post **Download complete**, with the filename and segment total when applicable. Completion notifications are dismissible and open Downloads when tapped.
 

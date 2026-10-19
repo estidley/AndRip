@@ -1,4 +1,8 @@
-# AndRip 0.3.3
+# AndRip 0.3.4
+
+## Stream saving in 0.3.4
+
+AES-128 HLS (the key the playlist itself serves) is decrypted and saved. A variant that already lists an audio codec is saved as one file instead of being rejected for a second audio playlist. Live HLS and DASH save the window listed at save time. A rejected segment URL refreshes that playlist once when the path shape still matches. Commercial DRM still stops with **Protected content, can't be saved.** The audit, including what is still deferred, is in [docs/red-team.md](docs/red-team.md).
 
 ## Playback, ads, toolbar and privacy in 0.3.3
 
@@ -64,7 +68,7 @@ See [release notes](docs/RELEASE-0.3.0.md) and [signing/release instructions](do
 - Non-destructive Room migration; URL-redacted logs; tests for transfer, parser and queue behavior.
 
 See [the full protocol support matrix and known limits](docs/MEDIA-SUPPORT.md) before assuming a stream can be downloaded.
-DRM is detected and refused. Live recording, encrypted HLS export, multi-period DASH export and unsupported layouts are not silently converted into partial files.
+Commercial DRM is detected and refused. AES-128 HLS and the current live window can be saved. Multi-period DASH and other unsupported layouts are not silently converted into partial files. See [the red-team audit](docs/red-team.md).
 
 ## Build and test
 

@@ -31,8 +31,10 @@ class ProtocolSafetyTest {
             DashParser.parse(xml, "https://e.com/a.mpd").video.single().segments.map { it.url.substringAfterLast('/') })
     }
 
-    @Test(expected = UnsupportedStreamException::class) fun hlsDiscontinuityIsExplicitlyUnsupportedForExport() {
-        HlsParser.parse("#EXTM3U\n#EXTINF:3,\na.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:3,\nb.ts\n#EXT-X-ENDLIST", "https://e.com/a.m3u8")
+    @Test fun hlsDiscontinuityKeepsBothSegments() {
+        val media = HlsParser.parse("#EXTM3U\n#EXTINF:3,\na.ts\n#EXT-X-DISCONTINUITY\n#EXTINF:3,\nb.ts\n#EXT-X-ENDLIST", "https://e.com/a.m3u8") as HlsMedia
+        assertEquals(listOf("https://e.com/a.ts", "https://e.com/b.ts"), media.segments.map { it.url })
+        assertTrue(media.discontinuity)
     }
 
     @Test(expected = IOException::class) fun implicitByteRangeCannotReferToAnotherResource() {

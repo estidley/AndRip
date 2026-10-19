@@ -40,6 +40,19 @@ object MediaDetector {
         return path.contains("/drm/") || path.contains("/widevine/") || path.contains("/fairplay/") || path.contains("/playready/")
     }
 
+    private val adPath = Regex("(?:^|/)(?:ads?|preroll|midroll|postroll|bumper|advert(?:isement)?)(?:[./]|$)", RegexOption.IGNORE_CASE)
+
+    /**
+     * Ad and preview manifests should not be offered as the video. This does not
+     * block the request; the page player still loads it.
+     */
+    fun looksLikeAd(url: String): Boolean {
+        val host = com.andrip.browser.browser.AdBlock.hostOf(url)
+        if (host != null && com.andrip.browser.browser.AdBlock.listed(host, com.andrip.browser.browser.AdBlock.domains)) return true
+        val path = url.substringBefore('#').substringBefore('?')
+        return adPath.containsMatchIn(path)
+    }
+
     fun classify(url: String, mimeType: String? = null): MediaKind? {
         if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
             return null
