@@ -77,6 +77,7 @@ class BrowserViewModel(private val app: Application) : AndroidViewModel(app) {
      * Safe from any thread: classification happens here, the list is updated on the main thread.
      */
     fun report(mediaUrl: String, mimeType: String?, referer: String?, source: String, headers: Map<String, String> = emptyMap()) {
+        if (MediaDetector.looksLikeAd(mediaUrl)) return
         val kind = MediaDetector.classify(mediaUrl, mimeType) ?: return
         val generation = pageGeneration
         mainThread.post {

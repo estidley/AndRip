@@ -105,7 +105,7 @@ object Remuxer {
                     val source = next ?: break
 
                     if ((source.extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_ENCRYPTED) != 0) {
-                        throw UnsupportedStreamException("This stream contains encrypted samples and cannot be saved.")
+                        throw UnsupportedStreamException(MediaProtection.PROTECTED)
                     }
 
                     val size = source.extractor.readSampleData(buffer, 0)

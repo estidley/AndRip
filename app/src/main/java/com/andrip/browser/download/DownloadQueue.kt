@@ -39,7 +39,7 @@ object DownloadQueue {
     internal val active = listOf(DownloadStatus.QUEUED, DownloadStatus.RUNNING)
 
     suspend fun enqueue(context: Context, media: DetectedMedia): Long = mutex.withLock {
-        if (media.protected) throw UnsupportedStreamException("This stream is DRM-protected and cannot be saved.")
+        if (media.protected) throw UnsupportedStreamException(MediaProtection.PROTECTED)
         val dao = AppDatabase.get(context).downloads()
         dao.findDuplicate(media.url, media.maxHeight)?.let {
             if (it.status in active) {
