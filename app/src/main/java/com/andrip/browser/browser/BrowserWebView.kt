@@ -22,67 +22,6 @@ object BrowserWebView {
     private const val TAG = "WebView"
     private const val BRIDGE = "AndRipBridge"
 
-    /**
-     * Runs inside each page. WebView's request interceptor never sees <video src> that was
-     * already cached, or anything fetched by a service worker, so the page reports those itself.
-     * It only ever passes URLs to the bridge; classification happens in Kotlin.
-     */
-    private val HOOK_JS = """
-        (function () {
-          if (window.__andripHooked) return;
-          window.__andripHooked = true;
-          function report(u, type) {
-            try {
-              if (!u || typeof u !== 'string') return;
-              if (u.indexOf('blob:') === 0 || u.indexOf('data:') === 0) return;
-              $BRIDGE.found(new URL(u, location.href).href, type || '');
-            } catch (e) {}
-          }
-          function scan() {
-            try {
-              var nodes = document.querySelectorAll('video, video source, audio, audio source');
-              for (var i = 0; i < nodes.length; i++) {
-                report(nodes[i].currentSrc || nodes[i].src, nodes[i].type || '');
-              }
-            } catch (e) {}
-          }
-          var timer = null;
-          function scanSoon() {
-            if (timer) return;
-            timer = setTimeout(function () { timer = null; scan(); }, 500);
-          }
-          var realFetch = window.fetch;
-          if (realFetch) {
-            window.fetch = function (input) {
-              try { report(typeof input === 'string' ? input : (input && input.url), ''); } catch (e) {}
-              return realFetch.apply(this, arguments).then(function (response) {
-                try { report(response.url, response.headers.get('content-type') || ''); } catch (e) {}
-                return response;
-              });
-            };
-          }
-          var realOpen = XMLHttpRequest.prototype.open;
-          XMLHttpRequest.prototype.open = function (method, u) {
-            try { report(String(u), ''); } catch (e) {}
-            if (!this.__andripObserved) {
-              this.__andripObserved = true;
-              this.addEventListener('load', function () {
-                try { report(this.responseURL, this.getResponseHeader('content-type') || ''); } catch (e) {}
-              });
-            }
-            return realOpen.apply(this, arguments);
-          };
-          try {
-            if (document.documentElement) {
-              new MutationObserver(scanSoon).observe(document.documentElement, { childList: true, subtree: true });
-            }
-          } catch (e) {}
-          document.addEventListener('play', scanSoon, true);
-          document.addEventListener('loadedmetadata', scanSoon, true);
-          scan();
-        })();
-    """.trimIndent()
-
     private class Bridge(private val vm: BrowserViewModel) {
         /** Called from the page, on a WebView background thread. */
         @JavascriptInterface
@@ -107,21 +46,31 @@ object BrowserWebView {
             builtInZoomControls = true
             displayZoomControls = false
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            // Leave the user agent, cache mode and cookie behavior otherwise at WebView defaults
+            // so page traffic matches a normal WebView session.
         }
         vm.userAgent = webView.settings.userAgentString
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
         webView.addJavascriptInterface(Bridge(vm), BRIDGE)
 
         webView.webViewClient = object : WebViewClient() {
-            // Background thread. Returning null lets the request go through untouched.
+            // Background thread. The player's request is never re-fetched here.
+            // Returning null keeps WebView's own headers, cookies, Origin and CORS handling.
+            // The only substitute response is an empty ad/tracker body, and that path refuses stream URLs.
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val url = request.url?.toString() ?: return null
                 try {
-                    val headers = request.requestHeaders
-                    vm.report(request.url.toString(), null, headers?.get("Referer") ?: headers?.get("referer"), "network", headers.orEmpty())
+                    val headers = request.requestHeaders?.toMap().orEmpty()
+                    vm.report(url, null, headers["Referer"] ?: headers["referer"], "network", headers)
                 } catch (e: Exception) {
                     AppLog.w(TAG, "Request inspection failed", e)
                 }
-                return null
+                return try {
+                    if (AdBlock.shouldBlock(url, request.isForMainFrame, vm.adBlockActive())) blockedAdResponse(url) else null
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "Ad block check failed; letting the request through", e)
+                    null
+                }
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -133,15 +82,20 @@ object BrowserWebView {
 
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 vm.onPageStarted(url)
-                view.evaluateJavascript(HOOK_JS, null)
+                injectProbe(view)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 vm.loading = false
                 vm.url = url
                 vm.title = view.title.orEmpty()
-                view.evaluateJavascript(HOOK_JS, null)
+                injectProbe(view)
                 syncNavigation(view)
+            }
+
+            private fun injectProbe(view: WebView) {
+                view.evaluateJavascript(PageProbe.SCRIPT, null)
+                view.evaluateJavascript(PageProbe.cosmeticScript(vm.adBlockActive()), null)
             }
 
             override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {

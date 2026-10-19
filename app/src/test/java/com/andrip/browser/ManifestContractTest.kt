@@ -25,4 +25,21 @@ class ManifestContractTest {
         }
         assertEquals(setOf("http", "https"), schemes)
     }
+
+    @Test fun sessionGuardStaysAliveSoTaskRemovalCanClearBrowsingData() {
+        val file = File("src/main/AndroidManifest.xml").takeIf { it.exists() }
+            ?: File("app/src/main/AndroidManifest.xml")
+        val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder().parse(file)
+        val services = document.getElementsByTagName("service")
+        var guard: Element? = null
+        for (i in 0 until services.length) {
+            val element = services.item(i) as Element
+            if (element.getAttributeNS("http://schemas.android.com/apk/res/android", "name") == ".privacy.SessionGuardService") {
+                guard = element
+            }
+        }
+        assertNotNull(guard)
+        assertEquals("false", guard!!.getAttributeNS("http://schemas.android.com/apk/res/android", "exported"))
+        assertEquals("false", guard.getAttributeNS("http://schemas.android.com/apk/res/android", "stopWithTask"))
+    }
 }

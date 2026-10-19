@@ -14,7 +14,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.res.painterResource
 import com.andrip.browser.R
@@ -45,12 +50,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -61,7 +68,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -82,7 +88,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
@@ -162,7 +172,6 @@ fun AndRipScreen(vm: BrowserViewModel, webView: WebView) {
                 BrowserBar(
                     vm = vm,
                     webView = webView,
-                    onShowVideos = { showVideos = true },
                     onOpen = { screen = it },
                 )
             },
@@ -222,57 +231,110 @@ fun AndRipScreen(vm: BrowserViewModel, webView: WebView) {
 private fun BrowserBar(
     vm: BrowserViewModel,
     webView: WebView,
-    onShowVideos: () -> Unit,
     onOpen: (Screen) -> Unit,
 ) {
     var text by remember { mutableStateOf(vm.url) }
     var focused by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
     val pageUrl = vm.url
-    val videoCount = vm.detected.size
+    val shape = RoundedCornerShape(8.dp)
 
     // Follow the page's address unless the user is in the middle of typing one.
     LaunchedEffect(pageUrl, focused) { if (!focused) text = pageUrl }
 
-    Surface(tonalElevation = 3.dp) {
-        Column(Modifier.statusBarsPadding()) {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BrandMark()
-                Text("AndRip", style = MaterialTheme.typography.titleMedium)
-            }
+    fun loadTyped() {
+        webView.loadUrl(UrlInput.toUrl(text))
+        focusManager.clearFocus()
+    }
+    fun toggleAdBlock() {
+        vm.adBlockEnabled = !vm.adBlockEnabled
+        if (webView.url == null) webView.loadUrl(vm.url) else webView.reload()
+    }
+    fun exitAndClear() {
+        val activity = context as? android.app.Activity ?: return
+        try {
+            com.andrip.browser.privacy.SessionPrivacy.onFullClose(activity)
+        } catch (e: Exception) {
+            AppLog.e("Privacy", "Could not clear browsing data", e)
+        }
+        activity.finishAndRemoveTask()
+    }
+
+    Surface(tonalElevation = 2.dp) {
+        Column(Modifier.statusBarsPadding().padding(vertical = 2.dp)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                    .height(40.dp)
+                    .padding(horizontal = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { webView.goBack() }, enabled = vm.canGoBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                }
-                OutlinedTextField(
+                val backEnabled = vm.canGoBack
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (backEnabled) 1f else 0.38f),
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clickable(enabled = backEnabled) { webView.goBack() }
+                        .padding(8.dp),
+                )
+                BasicTextField(
                     value = text,
                     onValueChange = { text = it },
                     modifier = Modifier
                         .weight(1f)
+                        .height(32.dp)
+                        .clip(shape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(horizontal = 10.dp)
                         .onFocusChanged { focused = it.isFocused },
                     singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    placeholder = { Text("Search or type a URL") },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(
-                        onGo = {
-                            webView.loadUrl(UrlInput.toUrl(text))
-                            focusManager.clearFocus()
-                        },
-                    ),
+                    keyboardActions = KeyboardActions(onGo = { loadTyped() }),
+                    decorationBox = { inner ->
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                            if (text.isEmpty()) {
+                                Text(
+                                    "Search or type a URL",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+                Text(
+                    text = if (vm.adBlockEnabled) "Ads on" else "Ads",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (vm.adBlockEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .semantics { contentDescription = if (vm.adBlockEnabled) "Ad blocker on" else "Ad blocker off" }
+                        .clip(shape)
+                        .clickable { toggleAdBlock() }
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
                 )
                 Box {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
-                    }
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "Menu",
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clickable { menuOpen = true }
+                            .padding(6.dp),
+                    )
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (vm.adBlockEnabled) "Ad blocker: on" else "Ad blocker: off") },
+                            onClick = { menuOpen = false; toggleAdBlock() },
+                        )
                         DropdownMenuItem(
                             text = { Text("Reload") },
                             onClick = { menuOpen = false; if (webView.url == null) webView.loadUrl(vm.url) else webView.reload() },
@@ -295,13 +357,17 @@ private fun BrowserBar(
                             text = { Text("Logs") },
                             onClick = { menuOpen = false; onOpen(Screen.LOGS) },
                         )
+                        DropdownMenuItem(
+                            text = { Text("Exit and clear browsing data") },
+                            onClick = { menuOpen = false; exitAndClear() },
+                        )
                     }
                 }
             }
             if (vm.loading) {
                 LinearProgressIndicator(
                     progress = { vm.progress / 100f },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(2.dp),
                 )
             }
         }
@@ -364,6 +430,8 @@ private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit, onSource: 
     val context = LocalContext.current
     var filter by rememberSaveable { mutableStateOf("All") }
     var notificationsEnabled by remember { mutableStateOf(Notifications.enabled(context)) }
+    var selected by remember { mutableStateOf(setOf<Long>()) }
+    var pendingDelete by remember { mutableStateOf<Set<Long>?>(null) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         notificationsEnabled = Notifications.enabled(context)
     }
@@ -379,6 +447,12 @@ private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit, onSource: 
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (selected.isNotEmpty()) {
+                        TextButton(onClick = { pendingDelete = selected }) { Text("Delete ${selected.size}") }
+                        TextButton(onClick = { selected = emptySet() }) { Text("Cancel") }
                     }
                 },
             )
@@ -439,33 +513,66 @@ private fun DownloadsScreen(vm: BrowserViewModel, onBack: () -> Unit, onSource: 
             items(visible, key = { it.id }) { item ->
                 DownloadRow(
                     item = item,
+                    selected = item.id in selected,
+                    selectionMode = selected.isNotEmpty(),
+                    onLongPress = { selected = if (item.id in selected) selected - item.id else selected + item.id },
+                    onToggleSelect = {
+                        selected = if (item.id in selected) selected - item.id else selected + item.id
+                    },
                     onCancel = { vm.cancel(item.id) },
                     onPause = { vm.pause(item.id) },
                     onSource = { item.pageUrl?.let(onSource) },
                     onRetry = { vm.retry(item.id) },
                     onRemove = { vm.remove(item.id) },
+                    onDelete = { pendingDelete = setOf(item.id) },
                     onOpen = { vm.openSaved(item) { openVideo(context, item) } },
                 )
                 HorizontalDivider()
             }
         }
     }
+    pendingDelete?.let { ids ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text(if (ids.size == 1) "Delete this download?" else "Delete ${ids.size} downloads?") },
+            text = { Text("The saved file is removed from storage and the list. An in-progress download is canceled first.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteDownloads(ids)
+                    selected = selected - ids
+                    pendingDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadRow(
     item: DownloadEntity,
+    selected: Boolean,
+    selectionMode: Boolean,
+    onLongPress: () -> Unit,
+    onToggleSelect: () -> Unit,
     onCancel: () -> Unit,
     onPause: () -> Unit,
     onSource: () -> Unit,
     onRetry: () -> Unit,
     onRemove: () -> Unit,
+    onDelete: () -> Unit,
     onOpen: () -> Unit,
 ) {
     val active = item.status == DownloadStatus.RUNNING || item.status == DownloadStatus.QUEUED
     Column(
         Modifier
             .fillMaxWidth()
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+            .combinedClickable(
+                onClick = { if (selectionMode) onToggleSelect() },
+                onLongClick = onLongPress,
+            )
             .padding(vertical = 8.dp),
     ) {
         Text(
@@ -491,18 +598,21 @@ private fun DownloadRow(
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            when {
-                active -> {
-                    TextButton(onClick = onPause) { Text("Pause") }
-                    TextButton(onClick = onCancel) { Text("Cancel") }
+        if (!selectionMode) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                when {
+                    active -> {
+                        TextButton(onClick = onPause) { Text("Pause") }
+                        TextButton(onClick = onCancel) { Text("Cancel") }
+                    }
+                    item.status == DownloadStatus.PAUSED -> TextButton(onClick = onRetry) { Text("Resume") }
+                    item.status == DownloadStatus.DONE -> TextButton(onClick = onOpen) { Text("Open") }
+                    else -> TextButton(onClick = onRetry) { Text(if (item.error?.startsWith("Retry saving:") == true) "Retry saving" else "Retry") }
                 }
-                item.status == DownloadStatus.PAUSED -> TextButton(onClick = onRetry) { Text("Resume") }
-                item.status == DownloadStatus.DONE -> TextButton(onClick = onOpen) { Text("Open") }
-                else -> TextButton(onClick = onRetry) { Text(if (item.error?.startsWith("Retry saving:") == true) "Retry saving" else "Retry") }
+                if (item.status == DownloadStatus.FAILED && item.pageUrl != null) TextButton(onClick = onSource) { Text("Source page") }
+                if (!active) TextButton(onClick = onRemove) { Text("Remove history") }
+                TextButton(onClick = onDelete) { Text("Delete") }
             }
-            if (item.status == DownloadStatus.FAILED && item.pageUrl != null) TextButton(onClick = onSource) { Text("Source page") }
-            if (!active) TextButton(onClick = onRemove) { Text("Remove history") }
         }
     }
 }

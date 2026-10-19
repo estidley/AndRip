@@ -75,6 +75,22 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     }
                 }
             }
+            output.sidecar?.let { side ->
+                val ext = side.extension.ifEmpty { "vtt" }
+                val sideName = "${item.title}.$ext"
+                val sideMime = if (ext == "ttml") "application/ttml+xml" else "text/vtt"
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        MediaSaver.save(
+                            applicationContext,
+                            side,
+                            sideName,
+                            sideMime,
+                            android.util.AtomicFile(File(workDir, "subtitle-publication.json")),
+                        )
+                    }
+                }.onFailure { error -> AppLog.w(TAG, "Subtitles were downloaded but not published", error) }
+            }
             withContext(Dispatchers.IO) { workDir.deleteRecursively() }
             AppLog.i(TAG, "Done #$id -> $name ($uri)")
             Result.success()
@@ -107,7 +123,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val json = JSONObject(item.headersJson)
         val captured = json.keys().asSequence().associateWith { json.getString(it) }
         val headers = RequestHeaders(item.referer, item.userAgent, item.url, captured)
-        if (com.andrip.browser.detect.MediaDetector.isProtectedUrl(item.url)) throw UnsupportedStreamException("This stream is DRM-protected and cannot be saved.")
+        if (com.andrip.browser.detect.MediaDetector.isProtectedUrl(item.url)) throw UnsupportedStreamException(MediaProtection.PROTECTED)
         val engine = DownloadEngine()
         val latest = MutableStateFlow(-1 to "")
         // The engine reports progress very often; write it out at most every 750 ms.
@@ -207,8 +223,8 @@ object MediaSaver {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "$folder/AndRip")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             })
-            uri = try { insert(movies, Environment.DIRECTORY_MOVIES) } catch (_: Exception) { null }
-                ?: insert(downloads, Environment.DIRECTORY_DOWNLOADS)
+            uri = try { insert(downloads, Environment.DIRECTORY_DOWNLOADS) } catch (_: Exception) { null }
+                ?: insert(movies, Environment.DIRECTORY_MOVIES)
                 ?: throw IOException("Storage refused to create the saved video.")
         }
         val target = checkNotNull(uri)

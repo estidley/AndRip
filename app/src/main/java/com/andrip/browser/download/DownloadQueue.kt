@@ -39,7 +39,7 @@ object DownloadQueue {
     internal val active = listOf(DownloadStatus.QUEUED, DownloadStatus.RUNNING)
 
     suspend fun enqueue(context: Context, media: DetectedMedia): Long = mutex.withLock {
-        if (media.protected) throw UnsupportedStreamException("This stream is DRM-protected and cannot be saved.")
+        if (media.protected) throw UnsupportedStreamException(MediaProtection.PROTECTED)
         val dao = AppDatabase.get(context).downloads()
         dao.findDuplicate(media.url, media.maxHeight)?.let {
             if (it.status in active) {
@@ -115,6 +115,26 @@ object DownloadQueue {
             AppDatabase.get(context).downloads().delete(id)
         }
         Notifications.clearResult(context, id)
+    }
+
+    /**
+     * Cancel an active transfer, delete the published file (MediaStore or app storage) and the
+     * private partials, then remove the list row. [remove] still keeps a finished export.
+     */
+    suspend fun delete(context: Context, id: Long) = mutex.withLock {
+        cancelLocked(context, id)
+        WorkerFiles.lock(id).withLock {
+            val dao = AppDatabase.get(context).downloads()
+            val item = dao.get(id)
+            withContext(Dispatchers.IO) {
+                val dir = DownloadWorker.workDir(context, id)
+                SavedFileDeleter.deleteAll(context, item?.outputUri, dir)
+                dir.deleteRecursively()
+            }
+            dao.delete(id)
+        }
+        Notifications.clearResult(context, id)
+        AppLog.i("Queue", "Deleted #$id and its saved file")
     }
 
     /** Repair the small non-transactional gap between Room insertion and WorkManager enqueue. */

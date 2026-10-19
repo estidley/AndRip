@@ -14,7 +14,7 @@ internal object LegacyMediaSaver {
     suspend fun save(source: File, folder: File, displayName: String, journal: AtomicFile): File {
         folder.mkdirs()
         val state = ExportCheckpoint.read(journal) ?: JSONObject()
-            .put("legacyName", "${java.util.UUID.randomUUID()}-${FileNames.sanitize(displayName.substringBeforeLast('.')).take(60)}.${FileNames.videoExtension(displayName)}")
+            .put("legacyName", "${java.util.UUID.randomUUID()}-${FileNames.sanitize(displayName.substringBeforeLast('.')).take(60)}.${legacyExtension(displayName)}")
             .also { ExportCheckpoint.write(journal, it) }
         val target = ownedFile(folder, state.getString("legacyName"))
         // Atomic rename publishes the file. A retry after process death reuses that publication.
@@ -47,6 +47,11 @@ internal object LegacyMediaSaver {
         val name = state.optString("legacyName").takeIf { it.isNotBlank() } ?: return
         File(ownedFile(folder, name).path + ".pending").delete()
         // Published files are independent of queue history and deliberately retained.
+    }
+
+    private fun legacyExtension(displayName: String): String {
+        val ext = displayName.substringAfterLast('.', "").lowercase()
+        return if (ext == "vtt" || ext == "ttml") ext else FileNames.videoExtension(displayName)
     }
 
     private fun ownedFile(folder: File, name: String): File = File(folder, name).also {

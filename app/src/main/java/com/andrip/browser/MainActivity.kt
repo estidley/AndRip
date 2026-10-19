@@ -31,6 +31,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.andrip.browser.privacy.SessionPrivacy.onUiSessionStart(this)
+        runCatching { startService(Intent(this, com.andrip.browser.privacy.SessionGuardService::class.java)) }
+            .onFailure { AppLog.w("Privacy", "Session guard did not start. Browsing data still clears on the next cold start if this session ends uncleanly.", it) }
         enableEdgeToEdge()
         handleNotificationIntent(intent)
 

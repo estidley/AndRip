@@ -48,7 +48,7 @@ object AppLog {
 
     private fun log(priority: Int, level: String, tag: String, message: String, error: Throwable?) {
         val text = Redaction.clean(if (error != null) message + "\n" + LogFile.stackTrace(error) else message)
-        Log.println(priority, LOGCAT_TAG, "$tag: $text")
+        runCatching { Log.println(priority, LOGCAT_TAG, "$tag: $text") }
         logFile?.write(level, tag, text)
     }
 

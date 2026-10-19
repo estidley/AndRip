@@ -14,14 +14,19 @@ internal class ExportCheckpoint(private val dir: File) {
 
     fun record(output: DownloadEngine.Output) = write(ready, JSONObject()
         .put("file", output.file.name).put("length", output.file.length())
-        .put("extension", output.extension).put("segments", output.completedSegments))
+        .put("extension", output.extension).put("segments", output.completedSegments)
+        .put("sidecar", output.sidecar?.name ?: ""))
 
     fun output(): DownloadEngine.Output? {
         val data = read(ready) ?: return null
         val file = File(dir, data.getString("file"))
         if (file.canonicalFile.parentFile != dir.canonicalFile || !file.isFile || file.length() <= 0 || file.length() != data.getLong("length")) return null
+        val sideName = data.optString("sidecar")
+        val side = sideName.takeIf {
+            it.isNotEmpty() && !it.contains('/') && !it.contains('\\') && it != "." && it != ".."
+        }?.let { File(dir, it) }?.takeIf { it.isFile && it.canonicalFile.parentFile == dir.canonicalFile }
         return DownloadEngine.Output(file, data.getString("extension"),
-            if (data.has("segments")) data.getInt("segments") else null)
+            if (data.has("segments")) data.getInt("segments") else null, side)
     }
 
     companion object {
